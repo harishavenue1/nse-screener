@@ -45,9 +45,17 @@ html, body, [data-testid="stAppViewContainer"] {
 [data-testid="stSidebar"] .stSlider [data-baseweb="slider"] { color: #2962ff; }
 [data-testid="stSidebar"] section[data-testid="stSidebarContent"] { padding-top: 1.2rem; }
 
-/* ---- Hide chrome but keep sidebar toggle ---- */
-#MainMenu, footer, header { visibility: hidden; }
-[data-testid="collapsedControl"] { visibility: visible !important; }
+/* ---- Hide chrome, keep sidebar toggle visible ---- */
+#MainMenu { visibility: hidden; }
+footer    { visibility: hidden; }
+/* Style header to match theme without hiding it (hiding it breaks the sidebar toggle) */
+header[data-testid="stHeader"] {
+    background-color: #131722 !important;
+    border-bottom: 1px solid #2a2e39 !important;
+    box-shadow: none !important;
+}
+/* Hide the deploy/share toolbar but not the sidebar arrow */
+[data-testid="stToolbarActions"] { visibility: hidden; }
 
 /* ---- Banner ---- */
 .tv-banner {
