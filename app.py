@@ -292,8 +292,8 @@ rsi_cols = ["RSI(D)", "RSI(W)", "RSI(M)"]
 
 styled = (
     df.style
-    .applymap(color_pct, subset=[c for c in pct_cols if c in df.columns])
-    .applymap(rsi_color, subset=[c for c in rsi_cols if c in df.columns])
+    .map(color_pct, subset=[c for c in pct_cols if c in df.columns])
+    .map(rsi_color, subset=[c for c in rsi_cols if c in df.columns])
     .format(
         {c: "{:+.2f}%" for c in pct_cols if c in df.columns}
         | {c: "{:.1f}"  for c in rsi_cols if c in df.columns}
