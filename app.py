@@ -210,15 +210,25 @@ with st.sidebar:
     change_min, change_max = st.slider("Change% range", -30, 30, (-30, 30))
     search      = st.text_input("Search symbol / company").strip().lower()
     only_3w     = st.checkbox("3 consecutive green weekly bars only")
-    sort_col    = st.selectbox(
+    sort_col = st.selectbox(
         "Sort by",
         ["Change%", "Weekly%", "Monthly%", "Yearly%", "RSI(D)", "RSI(W)", "RSI(M)"],
     )
-    sort_asc = st.checkbox("Ascending", value=False)
+    sort_dir = st.radio("Order", ["Descending ↓", "Ascending ↑"], horizontal=True)
+    sort_asc = sort_dir == "Ascending ↑"
 
-run = st.button("Run Scan", type="primary", use_container_width=True)
+run   = st.button("Run Scan", type="primary", use_container_width=True)
+clear = st.button("Clear Cache & Rescan", use_container_width=True)
 
 # ── Scan ──────────────────────────────────────────────────────────
+if clear:
+    import os as _os
+    if _os.path.exists(CACHE_FILE):
+        _os.remove(CACHE_FILE)
+    st.session_state.pop("data", None)
+    st.session_state.pop("info", None)
+    st.rerun()
+
 if run:
     if not selected:
         st.warning("Select at least one index.")
