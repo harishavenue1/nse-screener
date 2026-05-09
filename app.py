@@ -13,113 +13,189 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Global CSS ─────────────────────────────────────────────────────
+# ── TradingView-inspired palette ───────────────────────────────────
+# bg: #131722  panel: #1e222d  border: #2a2e39
+# text: #d1d4dc  muted: #787b86
+# bull/green: #26a69a  bear/red: #ef5350  accent: #2962ff
+# ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-/* ---- Page background ---- */
-[data-testid="stAppViewContainer"] {
-    background: #0f1117;
+/* ---- Base ---- */
+html, body, [data-testid="stAppViewContainer"] {
+    background-color: #131722 !important;
+    color: #d1d4dc;
+    font-family: -apple-system, "Trebuchet MS", sans-serif;
 }
+[data-testid="stMain"] { background-color: #131722 !important; }
+[data-testid="block-container"] { padding-top: 1rem !important; }
+
+/* ---- Sidebar ---- */
 [data-testid="stSidebar"] {
-    background: #161b27;
-    border-right: 1px solid #1e2535;
+    background-color: #1e222d !important;
+    border-right: 1px solid #2a2e39 !important;
 }
+[data-testid="stSidebar"] * { color: #d1d4dc !important; }
+[data-testid="stSidebar"] label { color: #787b86 !important; font-size: 0.78rem !important; }
+[data-testid="stSidebar"] .stSelectbox > div > div,
+[data-testid="stSidebar"] .stMultiSelect > div > div {
+    background-color: #131722 !important;
+    border-color: #2a2e39 !important;
+    color: #d1d4dc !important;
+}
+[data-testid="stSidebar"] .stSlider [data-baseweb="slider"] { color: #2962ff; }
+[data-testid="stSidebar"] section[data-testid="stSidebarContent"] { padding-top: 1.2rem; }
 
-/* ---- Hide Streamlit chrome ---- */
+/* ---- Hide chrome but keep sidebar toggle ---- */
 #MainMenu, footer, header { visibility: hidden; }
+[data-testid="collapsedControl"] { visibility: visible !important; }
 
-/* ---- Header banner ---- */
-.banner {
-    background: linear-gradient(135deg, #1a2340 0%, #0f1117 100%);
-    border: 1px solid #1e2d4a;
-    border-radius: 12px;
-    padding: 24px 32px;
-    margin-bottom: 24px;
+/* ---- Banner ---- */
+.tv-banner {
+    background: linear-gradient(90deg, #1e222d 0%, #131722 100%);
+    border: 1px solid #2a2e39;
+    border-left: 3px solid #2962ff;
+    border-radius: 8px;
+    padding: 18px 28px;
+    margin-bottom: 20px;
 }
-.banner h1 {
-    color: #e2e8f0;
-    font-size: 1.9rem;
+.tv-banner h1 {
+    color: #d1d4dc;
+    font-size: 1.65rem;
     font-weight: 700;
-    margin: 0 0 4px 0;
-    letter-spacing: -0.5px;
+    margin: 0 0 3px 0;
+    letter-spacing: -0.3px;
 }
-.banner p {
-    color: #64748b;
-    font-size: 0.88rem;
-    margin: 0;
+.tv-banner p { color: #787b86; font-size: 0.82rem; margin: 0; }
+.tv-banner .badge {
+    display: inline-block;
+    background: #2962ff22;
+    color: #2962ff;
+    border: 1px solid #2962ff55;
+    border-radius: 4px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    padding: 2px 7px;
+    margin-right: 6px;
+    text-transform: uppercase;
+}
+
+/* ---- Section label ---- */
+.section-label {
+    color: #2a2e39;
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    margin: 16px 0 6px 0;
+    border-bottom: 1px solid #2a2e39;
+    padding-bottom: 4px;
 }
 
 /* ---- Metric cards ---- */
 .metric-row {
     display: flex;
-    gap: 12px;
-    margin-bottom: 20px;
+    gap: 10px;
+    margin-bottom: 18px;
     flex-wrap: wrap;
 }
 .metric-card {
-    background: #161b27;
-    border: 1px solid #1e2535;
-    border-radius: 10px;
-    padding: 14px 20px;
+    background: #1e222d;
+    border: 1px solid #2a2e39;
+    border-radius: 6px;
+    padding: 12px 18px;
     flex: 1;
-    min-width: 120px;
+    min-width: 100px;
+    position: relative;
+    overflow: hidden;
 }
+.metric-card::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: #2a2e39;
+}
+.metric-card.bull::before { background: #26a69a; }
+.metric-card.bear::before { background: #ef5350; }
+.metric-card.blue::before { background: #2962ff; }
+.metric-card.purple::before { background: #7e57c2; }
 .metric-card .label {
-    color: #64748b;
-    font-size: 0.75rem;
+    color: #787b86;
+    font-size: 0.7rem;
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-bottom: 4px;
+    letter-spacing: 0.6px;
+    margin-bottom: 6px;
 }
 .metric-card .value {
-    color: #e2e8f0;
-    font-size: 1.5rem;
+    color: #d1d4dc;
+    font-size: 1.45rem;
     font-weight: 700;
     line-height: 1;
+    font-variant-numeric: tabular-nums;
 }
-.metric-card .value.green { color: #22c55e; }
-.metric-card .value.red   { color: #ef4444; }
-
-/* ---- Sidebar labels & widgets ---- */
-[data-testid="stSidebar"] label,
-[data-testid="stSidebar"] .stRadio label {
-    color: #94a3b8 !important;
-    font-size: 0.82rem !important;
-    font-weight: 500 !important;
-}
-[data-testid="stSidebar"] .stSelectbox > div,
-[data-testid="stSidebar"] .stMultiSelect > div {
-    background: #0f1117 !important;
-    border-color: #1e2535 !important;
-}
-[data-testid="stSidebar"] section[data-testid="stSidebarContent"] {
-    padding-top: 1.5rem;
-}
-
-/* ---- Section divider ---- */
-.section-label {
-    color: #475569;
-    font-size: 0.7rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    margin: 18px 0 8px 0;
-}
+.metric-card .value.bull { color: #26a69a; }
+.metric-card .value.bear { color: #ef5350; }
+.metric-card .value.blue { color: #2962ff; }
+.metric-card .value.purple { color: #7e57c2; }
 
 /* ---- Buttons ---- */
-[data-testid="stSidebar"] .stButton button {
-    border-radius: 8px;
-    font-weight: 600;
-    font-size: 0.85rem;
+[data-testid="stSidebar"] .stButton > button {
+    background-color: #2962ff !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: 5px !important;
+    font-weight: 600 !important;
+    font-size: 0.82rem !important;
+    letter-spacing: 0.2px !important;
+}
+[data-testid="stSidebar"] .stButton > button:hover {
+    background-color: #1e53e5 !important;
+}
+[data-testid="stSidebar"] .stButton:last-of-type > button {
+    background-color: #1e222d !important;
+    color: #787b86 !important;
+    border: 1px solid #2a2e39 !important;
+}
+[data-testid="stSidebar"] .stButton:last-of-type > button:hover {
+    border-color: #2962ff !important;
+    color: #2962ff !important;
+}
+
+/* ---- Download button ---- */
+[data-testid="stDownloadButton"] > button {
+    background-color: #1e222d !important;
+    color: #d1d4dc !important;
+    border: 1px solid #2a2e39 !important;
+    border-radius: 5px !important;
+    font-size: 0.82rem !important;
+}
+[data-testid="stDownloadButton"] > button:hover {
+    border-color: #2962ff !important;
+    color: #2962ff !important;
 }
 
 /* ---- Dataframe ---- */
-[data-testid="stDataFrame"] {
-    border-radius: 10px;
-    overflow: hidden;
-    border: 1px solid #1e2535 !important;
+[data-testid="stDataFrame"] iframe {
+    border-radius: 6px;
 }
+[data-testid="stDataFrame"] {
+    border: 1px solid #2a2e39 !important;
+    border-radius: 6px !important;
+}
+
+/* ---- Checkbox ---- */
+[data-testid="stSidebar"] .stCheckbox span { color: #d1d4dc !important; }
+
+/* ---- Scrollbar ---- */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #131722; }
+::-webkit-scrollbar-thumb { background: #2a2e39; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #2962ff; }
+
+/* ---- Toast ---- */
+[data-testid="stToast"] { background: #1e222d !important; border: 1px solid #2a2e39 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -287,18 +363,18 @@ def save_cache(df):
 
 def color_pct(val):
     if pd.isna(val):
-        return ""
-    return f"color: {'#22c55e' if val >= 0 else '#ef4444'}; font-weight: 600"
+        return "color: #787b86"
+    return f"color: {'#26a69a' if val >= 0 else '#ef5350'}; font-weight: 600"
 
 
 def rsi_color(val):
     if pd.isna(val):
-        return ""
+        return "color: #787b86"
     if val >= 70:
-        return "color: #ef4444; font-weight: 600"
+        return "color: #ef5350; font-weight: 700"
     if val <= 30:
-        return "color: #22c55e; font-weight: 600"
-    return "color: #e2e8f0"
+        return "color: #26a69a; font-weight: 700"
+    return "color: #d1d4dc"
 
 
 # ── Sidebar ────────────────────────────────────────────────────────
@@ -338,10 +414,17 @@ with st.sidebar:
     )
 
 # ── Header ────────────────────────────────────────────────────────
-st.markdown("""
-<div class="banner">
-  <h1>📈 NSE Stock Screener</h1>
-  <p>Price · Sector · Weekly / Monthly / Yearly Returns · RSI(14) · 3-Week Green Streak</p>
+st.markdown(f"""
+<div class="tv-banner">
+  <h1>NSE Stock Screener</h1>
+  <p style="margin-top:8px;">
+    <span class="badge">NSE</span>
+    <span class="badge" style="color:#26a69a;border-color:#26a69a55;background:#26a69a22;">Live Data</span>
+    <span style="color:#787b86;">
+      Price &nbsp;·&nbsp; Sector &nbsp;·&nbsp; Weekly / Monthly / Yearly Returns
+      &nbsp;·&nbsp; RSI(14) Daily / Weekly / Monthly &nbsp;·&nbsp; 3-Week Green Streak
+    </span>
+  </p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -426,37 +509,56 @@ col_order = ["Company Name", "Symbol", "Sector", "Price",
 df = df[[c for c in col_order if c in df.columns]]
 
 # ── Summary metric cards ──────────────────────────────────────────
-gainers  = int((df["Change%"] > 0).sum()) if "Change%" in df.columns else 0
-losers   = int((df["Change%"] < 0).sum()) if "Change%" in df.columns else 0
-green3w  = int(df["3W Green"].sum()) if "3W Green" in df.columns else 0
+gainers    = int((df["Change%"] > 0).sum()) if "Change%" in df.columns else 0
+losers     = int((df["Change%"] < 0).sum()) if "Change%" in df.columns else 0
+green3w    = int(df["3W Green"].sum())       if "3W Green" in df.columns else 0
 overbought = int((df["RSI(D)"] >= 70).sum()) if "RSI(D)" in df.columns else 0
 oversold   = int((df["RSI(D)"] <= 30).sum()) if "RSI(D)" in df.columns else 0
 
+avg_chg    = df["Change%"].mean()  if "Change%" in df.columns else None
+avg_mo     = df["Monthly%"].mean() if "Monthly%" in df.columns else None
+
+def delta_html(val, size="1rem"):
+    """Return a coloured ▲/▼ percentage string."""
+    if val is None or pd.isna(val):
+        return '<span style="color:#787b86">—</span>'
+    arrow = "▲" if val >= 0 else "▼"
+    color = "#26a69a" if val >= 0 else "#ef5350"
+    return f'<span style="color:{color};font-size:{size};font-weight:700">{arrow} {abs(val):.2f}%</span>'
+
 st.markdown(f"""
 <div class="metric-row">
-  <div class="metric-card">
+  <div class="metric-card blue">
     <div class="label">Stocks shown</div>
-    <div class="value">{len(df)}</div>
+    <div class="value blue">{len(df)}</div>
   </div>
-  <div class="metric-card">
-    <div class="label">Gainers</div>
-    <div class="value green">{gainers}</div>
+  <div class="metric-card bull">
+    <div class="label">Gainers today</div>
+    <div class="value bull">{gainers}</div>
   </div>
-  <div class="metric-card">
-    <div class="label">Losers</div>
-    <div class="value red">{losers}</div>
+  <div class="metric-card bear">
+    <div class="label">Losers today</div>
+    <div class="value bear">{losers}</div>
   </div>
-  <div class="metric-card">
-    <div class="label">3W Green</div>
-    <div class="value green">{green3w}</div>
+  <div class="metric-card {'bull' if avg_chg and avg_chg >= 0 else 'bear'}">
+    <div class="label">Avg day change</div>
+    <div class="value" style="font-size:1.1rem;padding-top:4px;">{delta_html(avg_chg, "1.1rem")}</div>
   </div>
-  <div class="metric-card">
+  <div class="metric-card {'bull' if avg_mo and avg_mo >= 0 else 'bear'}">
+    <div class="label">Avg monthly</div>
+    <div class="value" style="font-size:1.1rem;padding-top:4px;">{delta_html(avg_mo, "1.1rem")}</div>
+  </div>
+  <div class="metric-card bull">
+    <div class="label">3W Green streak</div>
+    <div class="value bull">{green3w}</div>
+  </div>
+  <div class="metric-card bear">
     <div class="label">RSI ≥ 70</div>
-    <div class="value red">{overbought}</div>
+    <div class="value bear">{overbought}</div>
   </div>
-  <div class="metric-card">
+  <div class="metric-card purple">
     <div class="label">RSI ≤ 30</div>
-    <div class="value green">{oversold}</div>
+    <div class="value purple">{oversold}</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -470,11 +572,12 @@ styled = (
     .map(color_pct, subset=[c for c in pct_cols if c in df.columns])
     .map(rsi_color, subset=[c for c in rsi_cols if c in df.columns])
     .format(
-        {c: "{:+.2f}%" for c in pct_cols if c in df.columns}
-        | {c: "{:.1f}"  for c in rsi_cols if c in df.columns}
+        {c: lambda v: f"▲ {v:.2f}%" if not pd.isna(v) and v >= 0 else (f"▼ {abs(v):.2f}%" if not pd.isna(v) else "—")
+         for c in pct_cols if c in df.columns}
+        | {c: "{:.1f}" for c in rsi_cols if c in df.columns}
         | {"Price": "₹{:.2f}"}
     )
-    .set_properties(**{"background-color": "#0f1117", "color": "#e2e8f0"})
+    .set_properties(**{"background-color": "#1e222d", "color": "#d1d4dc", "border-color": "#2a2e39"})
 )
 
 st.dataframe(styled, use_container_width=True, height=640)
@@ -483,7 +586,7 @@ st.dataframe(styled, use_container_width=True, height=640)
 col1, col2 = st.columns([3, 1])
 with col1:
     st.markdown(
-        '<div style="color:#334155;font-size:0.75rem;padding-top:8px;">'
+        '<div style="color:#2a2e39;font-size:0.75rem;padding-top:8px;">'
         'Data: Yahoo Finance (1d / 1wk / 1mo) + NSE index CSVs &nbsp;·&nbsp; Cached daily'
         '</div>',
         unsafe_allow_html=True,
