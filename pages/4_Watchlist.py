@@ -1,8 +1,10 @@
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from io import StringIO
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -147,7 +149,7 @@ button[data-testid="baseButton-secondary"]:hover {
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
-WATCHLIST_FILE = os.path.join(os.path.dirname(__file__), "..", "watchlist.json")
+WATCHLIST_FILE = str(Path(__file__).resolve().parent.parent / "watchlist.json")
 YF_SEARCH_URL  = "https://query1.finance.yahoo.com/v1/finance/search?q={q}&quotesCount=8&newsCount=0"
 YF_SEARCH_HDRS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
@@ -177,9 +179,12 @@ def load_watchlist() -> list[dict]:
         return []
 
 def save_watchlist(wl: list[dict]):
-    os.makedirs(os.path.dirname(WATCHLIST_FILE), exist_ok=True)
-    with open(WATCHLIST_FILE, "w") as f:
-        json.dump(wl, f, indent=2)
+    try:
+        Path(WATCHLIST_FILE).parent.mkdir(parents=True, exist_ok=True)
+        with open(WATCHLIST_FILE, "w") as f:
+            json.dump(wl, f, indent=2)
+    except OSError:
+        pass   # read-only filesystem (some cloud deployments) — silently skip
 
 def add_ticker(ticker: str, name: str):
     wl = load_watchlist()
@@ -314,58 +319,48 @@ def _calc_rsi(series: pd.Series, period: int = 14) -> float:
 
 @st.cache_data(ttl=300, show_spinner=False)   # 5-min cache
 def fetch_ticker_data(ticker: str) -> dict:
-    """Fetch all price + fundamental data for one ticker.
+    """Fetch price + fundamental data for one ticker.
 
-    Strategy:
-    - History (1y) is the authoritative source for ALL price data.
-      Many NSE SME stocks (exchange=NSI) have a corrupt info dict:
-      regularMarketPrice is stale, volume is None, name is garbage.
-    - info dict is used ONLY for fundamental ratios (PE, PB, ROE …)
-      and as a last-resort price fallback when history is missing.
-    - If history is empty for X.NS, automatically try X-SM.NS
-      (some SME stocks only respond to the Yahoo -SM symbol).
+    Two isolated stages so a slow/broken info fetch never blocks price data:
+      Stage 1 — history()  : price, OHLCV, 52W, RSI, MAs, sparkline
+      Stage 2 — info dict  : name, fundamentals (PE, PB, ROE …)
+
+    For NSE SME stocks (exchange=NSI) info.regularMarketPrice is stale;
+    history is always authoritative. Falls back to -SM ticker if needed.
     """
     result = {
         "ticker": ticker,
         "name":   _ticker_display_sym(ticker),
         "error":  None,
-        # price
         "price": None, "chg_pct": None,
         "open": None, "high": None, "low": None,
         "volume": None, "avg_volume": None,
         "w52_high": None, "w52_low": None,
-        # technical
         "rsi": None,
         "ma20": None, "ma50": None, "ma200": None,
-        # fundamental
         "market_cap": None, "pe": None, "pb": None,
         "ev_ebitda": None, "eps": None,
         "rev_ttm": None, "rev_growth": None,
         "debt_equity": None, "roe": None,
         "dividend_yield": None,
-        # meta
         "sector": None, "exchange": None,
-        # sparkline
         "sparkline": [],
-        # resolved ticker (may differ from input if -SM fallback was used)
         "resolved_ticker": ticker,
     }
+
+    # ── Stage 1: History (isolated — never let info failure kill this) ────────
+    _active_ticker = ticker
     try:
-        tk   = yf.Ticker(ticker)
-        info = tk.info or {}
+        hist = yf.Ticker(ticker).history(period="1y", interval="1d")
 
-        # ── 1. History — primary source for price / volume / 52W ──────────
-        hist = tk.history(period="1y", interval="1d")
-
-        # If empty and no -SM suffix, try the -SM variant (NSE SME stocks)
+        # -SM fallback for NSE SME stocks like SUNLITE
         if hist.empty and ticker.endswith(".NS") and "-" not in ticker:
-            sm_ticker = ticker.replace(".NS", "-SM.NS")
-            hist_sm   = yf.Ticker(sm_ticker).history(period="1y", interval="1d")
+            sm = ticker.replace(".NS", "-SM.NS")
+            hist_sm = yf.Ticker(sm).history(period="1y", interval="1d")
             if not hist_sm.empty:
-                hist   = hist_sm
-                tk     = yf.Ticker(sm_ticker)
-                info   = tk.info or {}
-                result["resolved_ticker"] = sm_ticker
+                hist = hist_sm
+                _active_ticker = sm
+                result["resolved_ticker"] = sm
 
         if not hist.empty:
             closes = hist["Close"]
@@ -378,26 +373,28 @@ def fetch_ticker_data(ticker: str) -> dict:
             result["avg_volume"] = int(hist["Volume"].mean())
             result["w52_high"]   = round(float(hist["High"].max()), 2)
             result["w52_low"]    = round(float(hist["Low"].min()), 2)
-            # Day change % from previous close
             if len(closes) >= 2:
                 prev = float(closes.iloc[-2])
                 result["chg_pct"] = round((last - prev) / prev * 100, 2) if prev else 0
-            # RSI + MAs + sparkline
             if len(closes) >= 15:
-                result["rsi"]   = _calc_rsi(closes)
+                result["rsi"]  = _calc_rsi(closes)
             if len(closes) >= 20:
-                result["ma20"]  = round(float(closes.tail(20).mean()), 2)
+                result["ma20"] = round(float(closes.tail(20).mean()), 2)
             if len(closes) >= 50:
-                result["ma50"]  = round(float(closes.tail(50).mean()), 2)
+                result["ma50"] = round(float(closes.tail(50).mean()), 2)
             if len(closes) >= 200:
-                result["ma200"] = round(float(closes.tail(200).mean()), 2)
+                result["ma200"]= round(float(closes.tail(200).mean()), 2)
             result["sparkline"] = closes.tail(30).round(2).tolist()
         else:
-            # Last-resort fallback: use info dict price (may be stale for SME)
-            result["price"]   = info.get("currentPrice") or info.get("regularMarketPrice")
-            result["chg_pct"] = info.get("regularMarketChangePercent") or 0
+            result["error"] = "No price history"
+    except Exception as e:
+        result["error"] = str(e)
 
-        # ── 2. Name — info dict, cleaned up ───────────────────────────────
+    # ── Stage 2: info dict for name + fundamentals (best-effort) ─────────────
+    try:
+        info = yf.Ticker(_active_ticker).info or {}
+
+        # Name
         raw_short = (info.get("shortName") or "").split(",")[0].strip()
         result["name"] = (
             info.get("longName")
@@ -405,7 +402,6 @@ def fetch_ticker_data(ticker: str) -> dict:
             or _ticker_display_sym(ticker)
         )
 
-        # ── 3. Fundamentals — from info dict ──────────────────────────────
         result["market_cap"]    = info.get("marketCap")
         result["pe"]            = info.get("trailingPE") or info.get("forwardPE")
         result["pb"]            = info.get("priceToBook")
@@ -417,41 +413,40 @@ def fetch_ticker_data(ticker: str) -> dict:
         result["sector"]        = info.get("sector") or info.get("industry") or "—"
         result["exchange"]      = info.get("exchange") or ("BSE" if ticker.endswith(".BO") else "NSE")
 
-        # Market cap: recalculate if info value looks wrong vs history price
-        # (NSE SME info.marketCap is based on the stale info price, not actual)
+        # Recalculate market cap when info value is stale (NSE SME)
         shares = info.get("sharesOutstanding")
         if shares and result["price"]:
             calc_mcap = shares * result["price"]
-            # If info mcap is off by >30% from recalculated, prefer the recalculated
             if result["market_cap"] and abs(calc_mcap - result["market_cap"]) / result["market_cap"] > 0.30:
                 result["market_cap"] = calc_mcap
             elif not result["market_cap"]:
                 result["market_cap"] = calc_mcap
 
-        # Revenue TTM from quarterly financials
+        # Price fallback if history was empty
+        if not result["price"]:
+            result["price"]   = info.get("currentPrice") or info.get("regularMarketPrice")
+            result["chg_pct"] = info.get("regularMarketChangePercent") or 0
+            if result["price"]:
+                result["error"] = None
+
+        # Revenue TTM
         try:
-            fin = tk.quarterly_financials
+            fin = yf.Ticker(_active_ticker).quarterly_financials
             if not fin.empty:
-                rev_row = None
                 for lbl in ["Total Revenue", "Revenue"]:
                     if lbl in fin.index:
                         rev_row = fin.loc[lbl]
+                        result["rev_ttm"] = float(rev_row.iloc[:4].sum())
+                        if len(rev_row) >= 5:
+                            cq = float(rev_row.iloc[0])
+                            pq = float(rev_row.iloc[4])
+                            if pq:
+                                result["rev_growth"] = round((cq - pq) / abs(pq) * 100, 1)
                         break
-                if rev_row is not None:
-                    result["rev_ttm"] = float(rev_row.iloc[:4].sum())
-                    if len(rev_row) >= 5:
-                        curr_q = float(rev_row.iloc[0])
-                        prev_q = float(rev_row.iloc[4])
-                        if prev_q and prev_q != 0:
-                            result["rev_growth"] = round((curr_q - prev_q) / abs(prev_q) * 100, 1)
         except Exception:
             pass
-
-        if not result["price"]:
-            result["error"] = "No price data"
-
-    except Exception as e:
-        result["error"] = str(e)
+    except Exception:
+        pass   # fundamentals unavailable — price data still shown
 
     return result
 
@@ -764,23 +759,33 @@ if not wl_meta:
     )
     st.stop()
 
-# ── Fetch data for all tickers ─────────────────────────────────────
-tickers = [w["ticker"] for w in wl_meta]
-
+# ── Fetch data for all tickers (parallel) ─────────────────────────
 progress_bar = st.progress(0, text="Loading watchlist data…")
-all_data = []
+all_data      = [None] * len(wl_meta)
+_completed    = [0]
 _watchlist_healed = False
-for i, item in enumerate(wl_meta):
-    progress_bar.progress((i + 1) / len(wl_meta), text=f"Loading {item['ticker']}…")
-    d = fetch_ticker_data(item["ticker"])
-    # Use stored name as fallback if yfinance returned nothing useful
-    if d["name"] == _ticker_display_sym(item["ticker"]) and item.get("name"):
-        d["name"] = item["name"]
-    # Auto-heal: if fetch resolved to a different ticker (e.g. -SM fallback), update watchlist.json
-    if d["resolved_ticker"] != item["ticker"]:
-        item["ticker"] = d["resolved_ticker"]
-        _watchlist_healed = True
-    all_data.append(d)
+
+def _fetch_one(idx_item):
+    idx, item = idx_item
+    return idx, fetch_ticker_data(item["ticker"])
+
+with ThreadPoolExecutor(max_workers=8) as pool:
+    futures = {pool.submit(_fetch_one, (i, item)): i for i, item in enumerate(wl_meta)}
+    for fut in as_completed(futures):
+        idx, d = fut.result()
+        item   = wl_meta[idx]
+        # Fallback name from watchlist.json when yfinance gave nothing
+        if d["name"] == _ticker_display_sym(item["ticker"]) and item.get("name"):
+            d["name"] = item["name"]
+        # Auto-heal: ticker resolved to -SM variant
+        if d["resolved_ticker"] != item["ticker"]:
+            item["ticker"] = d["resolved_ticker"]
+            _watchlist_healed = True
+        all_data[idx] = d
+        _completed[0] += 1
+        progress_bar.progress(_completed[0] / len(wl_meta),
+                               text=f"Loaded {_completed[0]}/{len(wl_meta)}…")
+
 if _watchlist_healed:
     save_watchlist(wl_meta)
 progress_bar.empty()
