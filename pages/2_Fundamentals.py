@@ -107,7 +107,8 @@ INDEX_URLS = {
     "Smallcap 250": "https://nsearchives.nseindia.com/content/indices/ind_niftysmallcap250list.csv",
     "Microcap 250": "https://nsearchives.nseindia.com/content/indices/ind_niftymicrocap250_list.csv",
 }
-FUND_CACHE  = "/tmp/fund_screener_cache.csv"
+NSE_SEC_LIST_URL  = "https://nsearchives.nseindia.com/content/equities/sec_list.csv"
+FUND_CACHE        = "/tmp/fund_screener_cache.csv"
 PLOTLY_DARK = dict(
     plot_bgcolor  = "#131722",
     paper_bgcolor = "#131722",
@@ -136,7 +137,32 @@ def growth(new, old):
         return round((new - old) / abs(old) * 100, 1)
     return None
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_nse_sme_stocks():
+    """Fetch NSE SME companies from NSE sec_list (SM + ST series). ~545 stocks."""
+    try:
+        r = requests.get(NSE_SEC_LIST_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
+        r.raise_for_status()
+        df = pd.read_csv(StringIO(r.text))
+        df.columns = df.columns.str.strip()
+        sme = df[df["Series"].str.strip().isin(["SM", "ST"])].copy()
+        sme = sme.rename(columns={"Security Name": "Company Name"})
+        sme["Symbol"]       = sme["Symbol"].str.strip()
+        sme["Company Name"] = sme["Company Name"].str.strip()
+        sme["Sector"]       = "NSE SME"
+        return sme[["Symbol", "Company Name", "Sector"]].reset_index(drop=True)
+    except Exception:
+        return None
+
+def parse_bse_custom(raw: str) -> pd.DataFrame:
+    """Parse comma/newline-separated BSE symbols into a stock DataFrame."""
+    syms = [s.strip().upper() for s in raw.replace("\n", ",").split(",") if s.strip()]
+    rows = [{"Symbol": s, "Company Name": s, "Sector": "BSE SME"} for s in syms]
+    return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Symbol","Company Name","Sector"])
+
 def get_index_stocks(name):
+    if name == "NSE SME Emerge":
+        return get_nse_sme_stocks()
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         r = requests.get(INDEX_URLS[name], headers=headers, timeout=10)
@@ -158,12 +184,13 @@ def _qtr_label(dt):
     else:               q, fy = 3, y+1
     return f"Q{q} FY{str(fy)[2:]}"
 
-def fetch_info(symbol):
+def fetch_info(symbol, exchange="NSE"):
     """Fetch key fundamentals — quarterly revenue + info-based margins/EPS."""
     try:
         ticker = SYMBOL_MAP.get(symbol, symbol)
+        suffix = ".BO" if exchange == "BSE" else ".NS"
         with _yf_lock:
-            tk    = yf.Ticker(f"{ticker}.NS")
+            tk    = yf.Ticker(f"{ticker}{suffix}")
             info  = tk.info
             q_inc = tk.quarterly_income_stmt
             a_inc = tk.income_stmt
@@ -257,11 +284,12 @@ def save_fund_cache(df):
     out["_date"] = date.today().isoformat()
     out.to_csv(FUND_CACHE, index=False)
 
-def get_quarterly(symbol):
+def get_quarterly(symbol, exchange="NSE"):
     """Return cleaned quarterly income statement DataFrame."""
     try:
         ticker = SYMBOL_MAP.get(symbol, symbol)
-        tk     = yf.Ticker(f"{ticker}.NS")
+        suffix = ".BO" if exchange == "BSE" else ".NS"
+        tk     = yf.Ticker(f"{ticker}{suffix}")
         inc    = tk.quarterly_income_stmt
         if inc is None or inc.empty:
             return None
@@ -315,7 +343,13 @@ tab_screen, tab_dive = st.tabs(["Fundamental Screener", "Stock Deep Dive"])
 with tab_screen:
     with st.sidebar:
         st.markdown("## 📊 Filters")
-        idx_sel  = st.multiselect("Index", list(INDEX_URLS.keys()), default=["Midcap 150"])
+        idx_sel  = st.multiselect("Index", list(INDEX_URLS.keys()) + ["NSE SME Emerge"], default=["Midcap 150"])
+        bse_fund_input = st.text_area(
+            "BSE SME Symbols",
+            placeholder="YASHHV, CNCRD\n(comma or newline)",
+            height=70, label_visibility="visible",
+            help="BSE-listed SME stocks fetched with .BO suffix",
+        ).strip()
         sort_f   = st.selectbox("Sort by", ["Rev YoY%", "Rev QoQ%", "Rev (Cr)", "EPS Growth%", "Net Margin", "Op Margin", "PE", "ROE%"])
         sort_asc = st.radio("Order", ["Descending ↓", "Ascending ↑"], horizontal=True) == "Ascending ↑"
         min_pe, max_pe = st.slider("PE range", 0, 200, (0, 100))
@@ -329,12 +363,16 @@ with tab_screen:
         st.rerun()
 
     if scan_btn:
-        if not idx_sel:
-            st.warning("Select at least one index.")
+        if not idx_sel and not bse_fund_input:
+            st.warning("Select at least one index or enter BSE symbols.")
             st.stop()
 
-        frames = [get_index_stocks(i) for i in idx_sel]
+        frames = [get_index_stocks(i) for i in idx_sel] if idx_sel else []
         frames = [f for f in frames if f is not None]
+        if bse_fund_input:
+            bse_df = parse_bse_custom(bse_fund_input)
+            if not bse_df.empty:
+                frames.append(bse_df)
         if not frames:
             st.stop()
         info_df  = pd.concat(frames).drop_duplicates("Symbol").reset_index(drop=True)
@@ -351,8 +389,14 @@ with tab_screen:
             status = st.empty()
             results = []
 
+            # Build exchange lookup (BSE SME stocks need .BO suffix)
+            exch_map = {}
+            if "Sector" in info_df.columns:
+                exch_map = {row["Symbol"]: ("BSE" if row.get("Sector") == "BSE SME" else "NSE")
+                            for _, row in info_df.iterrows()}
+
             with ThreadPoolExecutor(max_workers=8) as ex:
-                futs = {ex.submit(fetch_info, s): s for s in symbols}
+                futs = {ex.submit(fetch_info, s, exch_map.get(s, "NSE")): s for s in symbols}
                 for i, fut in enumerate(as_completed(futs)):
                     r = fut.result()
                     if r:
@@ -509,11 +553,23 @@ with tab_dive:
 
     # Fetch only when button pressed or symbol changed
     if fetch_btn or st.session_state.get("dive_symbol") != symbol_input:
+        # Auto-detect BSE vs NSE: try .NS first, fall back to .BO
+        _sym_up  = symbol_input.strip().upper()
+        _suffix  = ".NS"
+        try:
+            _chk = yf.Ticker(f"{_sym_up}.NS").info or {}
+            if not _chk.get("regularMarketPrice"):
+                _chk2 = yf.Ticker(f"{_sym_up}.BO").info or {}
+                if _chk2.get("regularMarketPrice"):
+                    _suffix = ".BO"
+        except Exception:
+            pass
+        _dive_exch = "BSE" if _suffix == ".BO" else "NSE"
         with st.spinner(f"Fetching quarterly data for {symbol_input}…"):
-            qdf_raw = get_quarterly(symbol_input)
+            qdf_raw    = get_quarterly(symbol_input, _dive_exch)
             ticker_key = SYMBOL_MAP.get(symbol_input, symbol_input)
             try:
-                info_raw = yf.Ticker(f"{ticker_key}.NS").info or {}
+                info_raw = yf.Ticker(f"{ticker_key}{_suffix}").info or {}
             except Exception:
                 info_raw = {}
         st.session_state["dive_symbol"] = symbol_input

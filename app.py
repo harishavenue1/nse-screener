@@ -214,19 +214,56 @@ INDEX_URLS = {
     "Microcap 250": "https://nsearchives.nseindia.com/content/indices/ind_niftymicrocap250_list.csv",
 }
 
+# NSE sec_list has ALL NSE equities including SME (SM/ST series) — ~545 SME stocks
+NSE_SEC_LIST_URL = "https://nsearchives.nseindia.com/content/equities/sec_list.csv"
+
 SYMBOL_MAP = {"ZOMATO": "ETERNAL"}
 CACHE_FILE = "/tmp/screener_cache.csv"
 BATCH_SIZE = 100
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_nse_sme_stocks():
+    """Fetch NSE SME companies from NSE sec_list (SM + ST series). ~545 stocks."""
+    try:
+        r = requests.get(NSE_SEC_LIST_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
+        r.raise_for_status()
+        df = pd.read_csv(StringIO(r.text))
+        df.columns = df.columns.str.strip()
+        sme = df[df["Series"].str.strip().isin(["SM", "ST"])].copy()
+        sme = sme.rename(columns={"Security Name": "Company Name"})
+        sme["Symbol"]       = sme["Symbol"].str.strip()
+        sme["Company Name"] = sme["Company Name"].str.strip()
+        sme["Sector"]       = "NSE SME"
+        sme["Exchange"]     = "NSE"
+        return sme[["Symbol", "Company Name", "Sector", "Exchange"]].reset_index(drop=True)
+    except Exception as e:
+        st.error(f"Could not fetch NSE SME list: {e}")
+        return None
+
+
+def parse_bse_custom(raw: str) -> pd.DataFrame:
+    """Parse comma/newline-separated BSE symbols into a stock DataFrame."""
+    syms = [s.strip().upper() for s in raw.replace("\n", ",").split(",") if s.strip()]
+    rows = [{"Symbol": s, "Company Name": s, "Sector": "BSE SME", "Exchange": "BSE"}
+            for s in syms]
+    return pd.DataFrame(rows) if rows else pd.DataFrame(
+        columns=["Symbol", "Company Name", "Sector", "Exchange"])
+
+
 def get_index_stocks(index_name):
+    """Returns DataFrame with Symbol, Company Name, Sector, Exchange columns."""
+    if index_name == "NSE SME Emerge":
+        return get_nse_sme_stocks()
     try:
         headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/html,application/xhtml+xml"}
         r = requests.get(INDEX_URLS[index_name], headers=headers, timeout=10)
         r.raise_for_status()
         df = pd.read_csv(StringIO(r.text))
         cols = [c for c in ["Symbol", "Company Name", "Industry"] if c in df.columns]
-        return df[cols].rename(columns={"Industry": "Sector"})
+        df = df[cols].rename(columns={"Industry": "Sector"})
+        df["Exchange"] = "NSE"
+        return df
     except Exception as e:
         st.error(f"Could not fetch {index_name}: {e}")
         return None
@@ -257,14 +294,20 @@ def batch_download(tickers, period, interval):
         return None, None
 
 
-def scan_symbols(symbols, progress_bar, status_text):
+def scan_symbols(symbols, progress_bar, status_text, exchange_map=None):
+    """exchange_map: dict of {symbol: 'NSE'|'BSE'}, defaults to NSE for all."""
     results = []
     total  = len(symbols)
     chunks = [symbols[i:i + BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
     done   = 0
+    if exchange_map is None:
+        exchange_map = {}
 
     for chunk in chunks:
-        tickers = [f"{SYMBOL_MAP.get(s, s)}.NS" for s in chunk]
+        tickers = [
+            f"{SYMBOL_MAP.get(s, s)}.{'BO' if exchange_map.get(s) == 'BSE' else 'NS'}"
+            for s in chunk
+        ]
 
         status_text.markdown(f"⬇️ Fetching **daily** data — stocks {done + 1}–{done + len(chunk)}…")
         close_d, adj_d = batch_download(tickers, "2y", "1d")
@@ -391,10 +434,20 @@ with st.sidebar:
     st.markdown('<div class="section-label">Universe</div>', unsafe_allow_html=True)
     selected = st.multiselect(
         "Indices",
-        options=list(INDEX_URLS.keys()),
+        options=list(INDEX_URLS.keys()) + ["NSE SME Emerge"],
         default=["Midcap 150", "Smallcap 250"],
         label_visibility="collapsed",
     )
+    st.markdown(
+        '<div class="section-label" style="margin-top:10px">BSE SME Symbols</div>',
+        unsafe_allow_html=True,
+    )
+    bse_input = st.text_area(
+        "BSE symbols",
+        placeholder="YASHHV, CNCRD, SUPREMEPWR\n(comma or newline separated)",
+        height=80, label_visibility="collapsed",
+        help="Enter BSE-listed SME stock symbols. These are fetched with .BO suffix from yfinance.",
+    ).strip()
 
     st.markdown('<div class="section-label">Filters</div>', unsafe_allow_html=True)
     rsi_min, rsi_max = st.slider("Daily RSI", 0, 100, (0, 100))
@@ -446,16 +499,28 @@ if clear:
 
 # ── Scan ──────────────────────────────────────────────────────────
 if run:
-    if not selected:
-        st.warning("Select at least one index.")
+    if not selected and not bse_input:
+        st.warning("Select at least one index or enter BSE symbols.")
         st.stop()
 
     with st.spinner("Fetching index lists…"):
-        frames = [get_index_stocks(idx) for idx in selected]
+        frames = [get_index_stocks(idx) for idx in selected] if selected else []
         frames = [f for f in frames if f is not None]
+
+        # Append BSE custom symbols
+        if bse_input:
+            bse_df = parse_bse_custom(bse_input)
+            if not bse_df.empty:
+                frames.append(bse_df)
+
         if not frames:
             st.stop()
         info_df = pd.concat(frames).drop_duplicates("Symbol").reset_index(drop=True)
+
+    # Build exchange map: symbol → 'NSE' or 'BSE'
+    exchange_map = {}
+    if "Exchange" in info_df.columns:
+        exchange_map = dict(zip(info_df["Symbol"], info_df["Exchange"]))
 
     cached = load_cache()
     if cached is not None:
@@ -467,7 +532,7 @@ if run:
         progress = st.progress(0, text=f"Scanning {len(symbols)} stocks…")
         status   = st.empty()
 
-        results = scan_symbols(symbols, progress, status)
+        results = scan_symbols(symbols, progress, status, exchange_map)
 
         status.empty()
         progress.empty()

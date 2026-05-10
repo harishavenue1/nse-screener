@@ -1,0 +1,302 @@
+[
+  {
+    "ticker": "STLTECH.NS",
+    "name": "Sterlite Technologies Limited",
+    "added_at": "2026-05-10T22:02:37.695745"
+  },
+  {
+    "ticker": "AXISCADES.NS",
+    "name": "AXISCADES Technologies Limited",
+    "added_at": "2026-05-10T22:07:52.920701"
+  },
+  {
+    "ticker": "ACUTAAS.NS",
+    "name": "Acutaas Chemicals Limited",
+    "added_at": "2026-05-10T22:08:12.606831"
+  },
+  {
+    "ticker": "AEROFLEX.NS",
+    "name": "Aeroflex Industries Limited",
+    "added_at": "2026-05-10T22:08:23.365456"
+  },
+  {
+    "ticker": "AZAD.NS",
+    "name": "Azad Engineering Limited",
+    "added_at": "2026-05-10T22:08:35.567941"
+  },
+  {
+    "ticker": "BSE.NS",
+    "name": "BSE Limited",
+    "added_at": "2026-05-10T22:08:41.267928"
+  },
+  {
+    "ticker": "CNCRD.BO",
+    "name": "Concord Control Systems Ltd",
+    "added_at": "2026-05-10T22:08:51.077633"
+  },
+  {
+    "ticker": "JINDALSAW.NS",
+    "name": "Jindal Saw Limited",
+    "added_at": "2026-05-10T22:09:12.597048"
+  },
+  {
+    "ticker": "KIRLOSENG.NS",
+    "name": "Kirloskar Oil Engines Limited",
+    "added_at": "2026-05-10T22:09:23.446036"
+  },
+  {
+    "ticker": "KMEW.NS",
+    "name": "Knowledge Marine & Engineering Works Limited",
+    "added_at": "2026-05-10T22:09:32.635981"
+  },
+  {
+    "ticker": "KRN.NS",
+    "name": "KRN Heat Exchanger and Refrigeration Limited",
+    "added_at": "2026-05-10T22:09:50.613112"
+  },
+  {
+    "ticker": "MCX.NS",
+    "name": "Multi Commodity Exchange of India Limited",
+    "added_at": "2026-05-10T22:09:57.345791"
+  },
+  {
+    "ticker": "MTARTECH.NS",
+    "name": "Mtar Technologies Limited",
+    "added_at": "2026-05-10T22:10:02.823465"
+  },
+  {
+    "ticker": "NETWEB.NS",
+    "name": "Netweb Technologies India Limited",
+    "added_at": "2026-05-10T22:10:07.614981"
+  },
+  {
+    "ticker": "QPOWER.NS",
+    "name": "Quality Power Electrical Equipments Limited",
+    "added_at": "2026-05-10T22:10:13.482770"
+  },
+  {
+    "ticker": "SUNLITE-SM.NS",
+    "name": "SUNLITE RECYCLING IND LTD",
+    "added_at": "2026-05-10T22:10:22.323647"
+  },
+  {
+    "ticker": "TDPOWERSYS.NS",
+    "name": "TD Power Systems Limited",
+    "added_at": "2026-05-10T22:10:30.482138"
+  },
+  {
+    "ticker": "TECHNOE.NS",
+    "name": "Techno Electric & Engineering Company Limited",
+    "added_at": "2026-05-10T22:10:45.477435"
+  },
+  {
+    "ticker": "TORNTPOWER.NS",
+    "name": "Torrent Power Limited",
+    "added_at": "2026-05-10T22:10:52.352280"
+  },
+  {
+    "ticker": "ADANIPOWER.NS",
+    "name": "Adani Power Limited",
+    "added_at": "2026-05-10T22:11:08.229382"
+  },
+  {
+    "ticker": "AIMTRON.NS",
+    "name": "AIMTRON ELECTRONICS LTD",
+    "added_at": "2026-05-10T22:11:15.905216"
+  },
+  {
+    "ticker": "ATLANTAELE.NS",
+    "name": "Atlanta Electricals Limited",
+    "added_at": "2026-05-10T22:11:28.880504"
+  },
+  {
+    "ticker": "BAHETI.NS",
+    "name": "BAHETI RECYCLING IND LTD",
+    "added_at": "2026-05-10T22:11:44.560817"
+  },
+  {
+    "ticker": "CUMMINSIND.NS",
+    "name": "Cummins India Limited",
+    "added_at": "2026-05-10T22:11:50.698125"
+  },
+  {
+    "ticker": "DATAPATTNS.NS",
+    "name": "Data Patterns (India) Limited",
+    "added_at": "2026-05-10T22:12:01.562147"
+  },
+  {
+    "ticker": "DEEDEV.NS",
+    "name": "DEE Development Engineers Limited",
+    "added_at": "2026-05-10T22:12:07.415725"
+  },
+  {
+    "ticker": "DYCL.NS",
+    "name": "Dynamic Cables Limited",
+    "added_at": "2026-05-10T22:12:12.770930"
+  },
+  {
+    "ticker": "DYNAMATECH.NS",
+    "name": "Dynamatic Technologies Limited",
+    "added_at": "2026-05-10T22:12:41.828967"
+  },
+  {
+    "ticker": "GVT&D.NS",
+    "name": "GE Vernova T&D India Limited",
+    "added_at": "2026-05-10T22:12:49.257419"
+  },
+  {
+    "ticker": "HSCL.NS",
+    "name": "Himadri Speciality Chemical Limited",
+    "added_at": "2026-05-10T22:12:59.750283"
+  },
+  {
+    "ticker": "JNKINDIA.NS",
+    "name": "JNK India Limited",
+    "added_at": "2026-05-10T22:13:07.691100"
+  },
+  {
+    "ticker": "JSLL.NS",
+    "name": "Jeena Sikho Lifecare Limited",
+    "added_at": "2026-05-10T22:13:15.340665"
+  },
+  {
+    "ticker": "KSHINTL.NS",
+    "name": "KSH International Limited",
+    "added_at": "2026-05-10T22:13:22.316212"
+  },
+  {
+    "ticker": "POWERINDIA.NS",
+    "name": "Hitachi Energy India Limited",
+    "added_at": "2026-05-10T22:13:40.901608"
+  },
+  {
+    "ticker": "PRAJIND.NS",
+    "name": "Praj Industries Limited",
+    "added_at": "2026-05-10T22:13:46.993392"
+  },
+  {
+    "ticker": "PRECWIRE.NS",
+    "name": "Precision Wires India Limited",
+    "added_at": "2026-05-10T22:13:56.688816"
+  },
+  {
+    "ticker": "RNITAI.BO",
+    "name": "RNIT Al Solutions Limited",
+    "added_at": "2026-05-10T22:14:03.572316"
+  },
+  {
+    "ticker": "ROSSTECH.NS",
+    "name": "Rossell Techsys Limited",
+    "added_at": "2026-05-10T22:14:10.066955"
+  },
+  {
+    "ticker": "SAILIFE.NS",
+    "name": "Sai Life Sciences Limited",
+    "added_at": "2026-05-10T22:14:16.728196"
+  },
+  {
+    "ticker": "SANSERA.NS",
+    "name": "Sansera Engineering Limited",
+    "added_at": "2026-05-10T22:14:22.346999"
+  },
+  {
+    "ticker": "SCHNEIDER.NS",
+    "name": "Schneider Electric Infrastructure Limited",
+    "added_at": "2026-05-10T22:14:28.641278"
+  },
+  {
+    "ticker": "SHILCTECH.NS",
+    "name": "Shilchar Technologies Limited",
+    "added_at": "2026-05-10T22:14:38.222445"
+  },
+  {
+    "ticker": "SIEMENS.NS",
+    "name": "Siemens Limited",
+    "added_at": "2026-05-10T22:14:44.285582"
+  },
+  {
+    "ticker": "SUPREMEPWR.NS",
+    "name": "SUPREME POWER EQUIPMENT L",
+    "added_at": "2026-05-10T22:14:51.366083"
+  },
+  {
+    "ticker": "VOLTAMP.NS",
+    "name": "Voltamp Transformers Limited",
+    "added_at": "2026-05-10T22:14:57.019599"
+  },
+  {
+    "ticker": "WEBELSOLAR.NS",
+    "name": "Websol Energy System Limited",
+    "added_at": "2026-05-10T22:15:07.527892"
+  },
+  {
+    "ticker": "WELCORP.NS",
+    "name": "Welspun Corp Limited",
+    "added_at": "2026-05-10T22:15:22.500656"
+  },
+  {
+    "ticker": "YASHHV.BO",
+    "name": "Yash Highvoltage Ltd.",
+    "added_at": "2026-05-10T22:15:29.660998"
+  },
+  {
+    "ticker": "HDFCSML250.NS",
+    "name": "HDFC Nifty Smallcap 250 ETF",
+    "added_at": "2026-05-10T22:22:33.092042"
+  },
+  {
+    "ticker": "METALIETF.NS",
+    "name": "ICICI Prudential Nifty Metal ETF",
+    "added_at": "2026-05-10T22:22:48.120160"
+  },
+  {
+    "ticker": "MID150BEES.NS",
+    "name": "Nippon India ETF Nifty Midcap 150",
+    "added_at": "2026-05-10T22:23:08.522614"
+  },
+  {
+    "ticker": "MIDSMALL.NS",
+    "name": "Mirae Asset Nifty MidSmallcap400 Momentum Quality 100 ETF",
+    "added_at": "2026-05-10T22:23:22.148313"
+  },
+  {
+    "ticker": "MOCAPITAL.NS",
+    "name": "Motilal Oswal AMC Ltd. - Motilal Oswal Nifty Capital Market ETF",
+    "added_at": "2026-05-10T22:23:31.559098"
+  },
+  {
+    "ticker": "MODEFENCE.NS",
+    "name": "Motilal Oswal Nifty India Defence ETF",
+    "added_at": "2026-05-10T22:23:42.346638"
+  },
+  {
+    "ticker": "MOVALUE.NS",
+    "name": "Motilal Oswal Mutual Fund",
+    "added_at": "2026-05-10T22:23:49.876225"
+  },
+  {
+    "ticker": "CPSEETF.NS",
+    "name": "CPSE ETF",
+    "added_at": "2026-05-10T22:23:56.707275"
+  },
+  {
+    "ticker": "SMALLCAP.NS",
+    "name": "Mirae Asset Nifty Smallcap 250 Momentum Quality 100 ETF",
+    "added_at": "2026-05-10T22:24:16.187372"
+  },
+  {
+    "ticker": "GOLDCASE.NS",
+    "name": "Zerodha Mutual Fund",
+    "added_at": "2026-05-10T22:24:44.488923"
+  },
+  {
+    "ticker": "SILVERCASE.NS",
+    "name": "Zerodha Silver ETF",
+    "added_at": "2026-05-10T22:24:50.313941"
+  },
+  {
+    "ticker": "LIQUIDCASE.NS",
+    "name": "Zerodha Liquid ETF",
+    "added_at": "2026-05-10T22:51:45.325394"
+  }
+]

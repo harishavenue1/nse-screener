@@ -83,9 +83,14 @@ PLOTLY_DARK = dict(
     xaxis=dict(gridcolor="#2a2e39", zerolinecolor="#2a2e39"),
     yaxis=dict(gridcolor="#2a2e39", zerolinecolor="#2a2e39"),
 )
-NSE_EQUITIES_URL = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
+NSE_EQUITIES_URL  = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
+NSE_SME_INDEX_URL = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY+SME+EMERGE"
+YF_SEARCH_URL     = "https://query1.finance.yahoo.com/v1/finance/search?q={q}&quotesCount=8&newsCount=0"
+YF_SEARCH_HDRS    = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+# Indian exchange codes returned by Yahoo Finance search
+_INDIA_EXCHANGES  = {"NSI", "NMS", "BSE", "NSE", "NS", "BO", "NSE_EQ"}
 
-# ── Symbol map (all NSE-listed equities) ─────────────────────────
+# ── Symbol map (NSE main board) ───────────────────────────────────
 @st.cache_data(ttl=86400, show_spinner=False)
 def load_symbol_map():
     try:
@@ -99,34 +104,87 @@ def load_symbol_map():
     except Exception:
         return pd.DataFrame(columns=["Symbol", "Company Name"])
 
+def _yf_ticker_from_yahoo(raw_sym: str) -> str:
+    """Convert Yahoo Finance search symbol to a yfinance-compatible ticker.
+    'AIMTRON-SM.NS' → 'AIMTRON.NS'
+    'YASHHV.BO'     → 'YASHHV.BO'
+    'CNCRD.BO'      → 'CNCRD.BO'
+    'DSSL.NS'       → 'DSSL.NS'
+    """
+    upper = raw_sym.upper()
+    # Strip exchange suffix first, then clean sub-type (e.g. -SM)
+    base = raw_sym.replace(".BO","").replace(".NS","").replace(".ns","").replace(".bo","")
+    base = base.split("-")[0]   # remove -SM, -BE, -ST etc.
+    if ".BO" in upper:
+        return base + ".BO"
+    return base + ".NS"
+
+def _yahoo_search(query: str):
+    """Search Yahoo Finance for Indian exchange companies.
+    Returns list of {ticker, name} dicts or empty list.
+    """
+    try:
+        url = YF_SEARCH_URL.format(q=requests.utils.quote(query))
+        r = requests.get(url, headers=YF_SEARCH_HDRS, timeout=6)
+        quotes = r.json().get("quotes", [])
+        results = []
+        for qt in quotes:
+            exch = qt.get("exchange", "")
+            if any(x in exch for x in _INDIA_EXCHANGES):
+                raw = qt.get("symbol", "")
+                name = qt.get("longname") or qt.get("shortname", "")
+                if raw and name:
+                    results.append({"ticker": _yf_ticker_from_yahoo(raw), "name": name})
+        return results
+    except Exception:
+        return []
+
 def find_symbol(query: str, sym_map: pd.DataFrame):
-    """Return (symbol, name) or (matches_df, None) for ambiguous queries."""
+    """Return (ticker, name) or (matches_df, None) for ambiguous results.
+    ticker includes exchange suffix: 'DSSL.NS' or 'YASHHV.BO'
+    """
     q = query.strip()
-    # Exact symbol match
+
+    # 1 ── Exact symbol match in NSE main board CSV
     exact = sym_map[sym_map["Symbol"].str.upper() == q.upper()]
     if not exact.empty:
-        return exact.iloc[0]["Symbol"], exact.iloc[0]["Company Name"]
-    # Partial company name match
+        return exact.iloc[0]["Symbol"] + ".NS", exact.iloc[0]["Company Name"]
+
+    # 2 ── Partial company name match in NSE main board CSV
     mask = sym_map["Company Name"].str.contains(q, case=False, na=False, regex=False)
     hits = sym_map[mask].reset_index(drop=True)
     if len(hits) == 1:
-        return hits.iloc[0]["Symbol"], hits.iloc[0]["Company Name"]
+        return hits.iloc[0]["Symbol"] + ".NS", hits.iloc[0]["Company Name"]
     if len(hits) > 1:
-        return hits, None
-    # Fallback: direct yfinance lookup
-    try:
-        tk = yf.Ticker(f"{q.upper()}.NS")
-        name = (tk.info or {}).get("longName", "")
-        if name:
-            return q.upper(), name
-    except Exception:
-        pass
+        df = hits[["Symbol", "Company Name"]].copy()
+        df["Symbol"] = df["Symbol"] + ".NS"
+        return df, None
+
+    # 3 ── Yahoo Finance search (NSE SME + BSE + anything missed above)
+    yf_results = _yahoo_search(q)
+    if len(yf_results) == 1:
+        return yf_results[0]["ticker"], yf_results[0]["name"]
+    if len(yf_results) > 1:
+        df = pd.DataFrame(yf_results).rename(columns={"ticker": "Symbol", "name": "Company Name"})
+        return df, None
+
+    # 4 ── Direct yfinance probe (.NS then .BO)
+    for suffix in [".NS", ".BO"]:
+        try:
+            tk = yf.Ticker(f"{q.upper()}{suffix}")
+            name = (tk.info or {}).get("longName", "")
+            if name:
+                return f"{q.upper()}{suffix}", name
+        except Exception:
+            pass
+
     return None, None
 
 # ── Data fetching ──────────────────────────────────────────────────
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_company(symbol: str):
-    tk = yf.Ticker(f"{symbol}.NS")
+def fetch_company(ticker: str):
+    """ticker is the full yfinance ticker e.g. 'DSSL.NS' or 'YASHHV.BO'."""
+    tk = yf.Ticker(ticker)
     info  = tk.info or {}
     q_inc = tk.quarterly_income_stmt
     a_inc = tk.income_stmt
@@ -134,7 +192,8 @@ def fetch_company(symbol: str):
     return info, q_inc, a_inc, news
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_nse_announcements(symbol: str, max_items: int = 10):
+def get_nse_announcements(base_symbol: str, max_items: int = 10):
+    """base_symbol = symbol without exchange suffix, e.g. 'DSSL'."""
     try:
         s = requests.Session()
         hdrs = {
@@ -143,7 +202,7 @@ def get_nse_announcements(symbol: str, max_items: int = 10):
             "Referer": "https://www.nseindia.com/",
         }
         s.get("https://www.nseindia.com/", headers=hdrs, timeout=8)
-        url = f"https://www.nseindia.com/api/corp-announcements?index=equities&symbol={symbol}"
+        url = f"https://www.nseindia.com/api/corp-announcements?index=equities&symbol={base_symbol}"
         r = s.get(url, headers=hdrs, timeout=8)
         data = r.json()
         return data[:max_items] if isinstance(data, list) else []
@@ -190,7 +249,7 @@ st.markdown("""
 c1, c2 = st.columns([4, 1])
 with c1:
     query = st.text_input(
-        "Company", placeholder="e.g. Dynacons Systems, Piccadily Agro, RELIANCE",
+        "Company", placeholder="e.g. Dynacons Systems, Yash Highvoltage, AIMTRON, SUPREMEPWR",
         label_visibility="collapsed",
     ).strip()
 with c2:
@@ -201,7 +260,7 @@ if not query:
     <div style="text-align:center;padding:60px 0;color:#475569;">
       <div style="font-size:2.5rem;margin-bottom:12px;">🏢</div>
       <div style="font-size:1rem;font-weight:600;color:#64748b;">Enter a company name or NSE symbol above</div>
-      <div style="font-size:0.82rem;color:#475569;margin-top:6px;">e.g. Dynacons Systems, Piccadily Agro, RELIANCE, HDFCBANK</div>
+      <div style="font-size:0.82rem;color:#475569;margin-top:6px;">NSE main board, NSE SME Emerge &amp; BSE — e.g. DSSL, YASHHV, AIMTRON, SUPREMEPWR</div>
     </div>
     """, unsafe_allow_html=True)
     st.stop()
@@ -209,21 +268,24 @@ if not query:
 # ── Symbol resolution ──────────────────────────────────────────────
 if go_btn or st.session_state.get("ca_query") != query:
     st.session_state["ca_query"] = query
-    st.session_state.pop("ca_symbol", None)
+    st.session_state.pop("ca_ticker", None)
     st.session_state.pop("ca_matches", None)
 
 with st.spinner("Looking up symbol…"):
     sym_map = load_symbol_map()
 
-if "ca_symbol" not in st.session_state:
+if "ca_ticker" not in st.session_state:
     result, name = find_symbol(query, sym_map)
     if result is None:
-        st.error(f"No NSE-listed company found for **{query}**. Try the NSE symbol directly.")
+        st.error(
+            f"Could not find **{query}** on NSE or BSE. "
+            "Try the exact symbol (e.g. YASHHV, SUPREMEPWR, AIMTRON)."
+        )
         st.stop()
     if isinstance(result, pd.DataFrame):
         st.session_state["ca_matches"] = result
     else:
-        st.session_state["ca_symbol"] = result
+        st.session_state["ca_ticker"] = result       # full ticker e.g. 'DSSL.NS' / 'YASHHV.BO'
         st.session_state["ca_name"]   = name
 
 if "ca_matches" in st.session_state:
@@ -234,24 +296,28 @@ if "ca_matches" in st.session_state:
     )
     if st.button("Confirm", type="primary"):
         row = matches[matches["Company Name"] == sel].iloc[0]
-        st.session_state["ca_symbol"] = row["Symbol"]
+        st.session_state["ca_ticker"] = row["Symbol"]   # already has suffix
         st.session_state["ca_name"]   = row["Company Name"]
         del st.session_state["ca_matches"]
         st.rerun()
     st.stop()
 
-symbol = st.session_state["ca_symbol"]
+ticker = st.session_state["ca_ticker"]                  # full yfinance ticker
+symbol = ticker.split(".")[0]                           # base symbol for display / NSE API
 
 # ── Fetch data ─────────────────────────────────────────────────────
 with st.spinner(f"Fetching data for {symbol}…"):
-    info, q_inc, a_inc, news = fetch_company(symbol)
+    info, q_inc, a_inc, news = fetch_company(ticker)
     announcements = get_nse_announcements(symbol)
 
-if not info or not info.get("longName"):
+if not info or not (info.get("regularMarketPrice") or info.get("currentPrice")):
     st.error(f"Could not fetch data for **{symbol}**. Verify the symbol is correct.")
     st.stop()
 
-company_name = info.get("longName", symbol)
+# longName is None for some NSE SME stocks — fall back through shortName → symbol
+_raw_short = info.get("shortName", "") or ""
+_short_clean = _raw_short.split(",")[0].strip()          # strip garbage like "AIMTRON.NS,0P0001..."
+company_name = info.get("longName") or (_short_clean if _short_clean and "." not in _short_clean else None) or symbol
 sector       = info.get("sector", "—")
 industry     = info.get("industry", "—")
 price        = info.get("currentPrice") or info.get("regularMarketPrice")
@@ -275,7 +341,7 @@ st.markdown(f"""
 <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:18px;flex-wrap:wrap;">
   <span style="color:#d1d4dc;font-size:1.8rem;font-weight:700;">{price_str}</span>
   <span style="color:{chg_color};font-size:1rem;font-weight:700;">{chg_str}</span>
-  <span style="color:#787b86;font-size:0.8rem;">52W: ₹{w52_low:,.0f} – ₹{w52_high:,.0f}</span>
+  <span style="color:#787b86;font-size:0.8rem;">52W: {'₹{:,.0f} – ₹{:,.0f}'.format(w52_low, w52_high) if w52_low and w52_high else '—'}</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -446,7 +512,7 @@ if rev_s is not None and len(rev_s) >= 2:
     """, unsafe_allow_html=True)
 
 # ── Fetch balance sheet for order book & capacity metrics ─────────
-q_bal = yf.Ticker(f"{symbol}.NS").quarterly_balance_sheet if symbol else None
+q_bal = yf.Ticker(ticker).quarterly_balance_sheet if ticker else None
 
 def bs_val(bs, row):
     """Safely get latest quarter value from balance sheet."""
@@ -651,123 +717,284 @@ with col_b:
 
 # ── Future Growth Projections ─────────────────────────────────────
 st.markdown('<div class="section-label">Future Growth Projections</div>', unsafe_allow_html=True)
+st.markdown(
+    '<p style="color:#787b86;font-size:0.78rem;margin:-8px 0 14px 0;">'
+    'Enter management guidance from the latest concall / investor presentation. '
+    'Historical CAGR & analyst consensus are shown for reference.</p>',
+    unsafe_allow_html=True,
+)
 
-if rev_s is not None and len(rev_s) >= 3 and a_inc is not None and not a_inc.empty:
-    rev_row_a = next((r for r in ["Total Revenue", "Net Interest Income"] if r in a_inc.index), None)
+if rev_s is not None and len(rev_s) >= 2:
+    rev_row_a = next((r for r in ["Total Revenue", "Net Interest Income"] if r in (a_inc.index if a_inc is not None and not a_inc.empty else [])), None)
+
+    # ── Historical CAGR ──
+    ann_rev = None
+    cagr1, cagr3 = None, None
+    if rev_row_a and a_inc is not None and not a_inc.empty:
+        ann_rev = a_inc.loc[rev_row_a].dropna().sort_index(ascending=True)
+        if len(ann_rev) >= 2:
+            cagr1 = ((float(ann_rev.iloc[-1]) / float(ann_rev.iloc[-2])) - 1) * 100
+        if len(ann_rev) >= 3:
+            n = min(3, len(ann_rev) - 1)
+            cagr3 = ((float(ann_rev.iloc[-1]) / float(ann_rev.iloc[-n-1])) ** (1/n) - 1) * 100
+
+    # ── Analyst revenue estimates (yfinance) ──
+    has_analyst   = False
+    analyst_rev_1y = None
+    analyst_growth = None
+    analyst_n      = 0
+    try:
+        rev_est = yf.Ticker(ticker).revenue_estimate
+        if rev_est is not None and not rev_est.empty and "+1y" in rev_est.index:
+            avg_1y = float(rev_est.loc["+1y", "avg"])
+            n_ana  = int(rev_est.loc["+1y", "numberOfAnalysts"])
+            if avg_1y > 0 and n_ana > 0:
+                has_analyst    = True
+                analyst_rev_1y = avg_1y / 1e7
+                analyst_growth = float(rev_est.loc["+1y", "growth"]) * 100
+                analyst_n      = n_ana
+    except Exception:
+        pass
+
+    # ── Quarter label helper ──
+    def next_qtr(label):
+        try:
+            q = int(label[1]); fy = int("20" + label[5:])
+            q += 1
+            if q > 4: q, fy = 1, fy + 1
+            return f"Q{q} FY{str(fy)[2:]}"
+        except Exception:
+            return label + "+"
+
+    last_qtr  = rev_s.index[-1]
+    base_rev  = float(rev_s.iloc[-1]) / 1e7   # latest quarter ₹ Cr
+    fwd_qtrs  = []
+    lbl = last_qtr
+    for _ in range(5):
+        lbl = next_qtr(lbl)
+        fwd_qtrs.append(lbl)
+    proj_qtrs_full = [last_qtr] + fwd_qtrs
+
+    def project(base_val, annual_pct, n=5):
+        q_rate = (1 + annual_pct / 100) ** 0.25 - 1
+        vals = [base_val]
+        for _ in range(n):
+            vals.append(round(vals[-1] * (1 + q_rate), 1))
+        return vals
+
+    # Scenario rates (annual %)
+    bear_annual = max(0.0, (cagr1 or 0) * 0.4)
+    base_annual = cagr1 or 10.0
+    bull_annual = max(base_annual * 1.5, cagr3 or base_annual * 1.5)
+
     col_p1, col_p2 = st.columns([1, 2])
 
     with col_p1:
-        # CAGR metrics
-        ann_rev = None
-        cagr1, cagr3 = None, None
-        if rev_row_a:
-            ann_rev = a_inc.loc[rev_row_a].dropna().sort_index(ascending=True)
-            if len(ann_rev) >= 2:
-                cagr1 = ((float(ann_rev.iloc[-1]) / float(ann_rev.iloc[-2])) - 1) * 100
-            if len(ann_rev) >= 4:
-                n = min(3, len(ann_rev) - 1)
-                cagr3 = ((float(ann_rev.iloc[-1]) / float(ann_rev.iloc[-n-1])) ** (1/n) - 1) * 100
+        # ── Management guidance input ──
+        st.markdown(
+            '<div style="color:#787b86;font-size:0.72rem;font-weight:700;'
+            'text-transform:uppercase;letter-spacing:0.6px;margin-bottom:6px">'
+            'Enter Management Guidance</div>',
+            unsafe_allow_html=True,
+        )
+        guidance_yoy = st.number_input(
+            "Annual Revenue Growth %",
+            min_value=-50.0, max_value=500.0,
+            value=None,
+            placeholder="e.g. 25 for 25% growth",
+            key=f"mgmt_guidance_{symbol}",
+            help="Type the revenue growth % target from the company's latest earnings call or investor presentation.",
+            label_visibility="collapsed",
+        )
 
-        # Avg quarterly growth rate (last 4 quarters)
-        avg_qoq = None
-        if rev_s is not None and len(rev_s) >= 4:
-            pct_changes = [(float(rev_s.iloc[i]) / float(rev_s.iloc[i-1]) - 1)
-                           for i in range(max(1, len(rev_s)-4), len(rev_s))
-                           if float(rev_s.iloc[i-1]) != 0]
-            avg_qoq = sum(pct_changes) / len(pct_changes) if pct_changes else None
+        if guidance_yoy is not None:
+            gc = "#26a69a" if guidance_yoy >= 0 else "#ef5350"
+            ga = "▲" if guidance_yoy >= 0 else "▼"
+            st.markdown(f"""
+            <div class="order-box" style="border-left:3px solid #7e57c2;margin-bottom:10px">
+              <div class="ob-label">Mgmt Guidance (entered)</div>
+              <div class="ob-val" style="color:#7e57c2">{ga} {abs(guidance_yoy):.1f}% YoY</div>
+              <div class="ob-note">Annual revenue growth target</div>
+            </div>""", unsafe_allow_html=True)
 
-        c1h = "#26a69a" if cagr1 and cagr1 >= 0 else "#ef5350"
-        c3h = "#26a69a" if cagr3 and cagr3 >= 0 else "#ef5350"
-        cqh = "#26a69a" if avg_qoq and avg_qoq >= 0 else "#ef5350"
+        # ── Analyst consensus ──
+        if has_analyst:
+            ac = "#26a69a" if analyst_growth >= 0 else "#ef5350"
+            aa = "▲" if analyst_growth >= 0 else "▼"
+            st.markdown(f"""
+            <div class="order-box" style="margin-bottom:10px">
+              <div class="ob-label">Analyst Consensus (+1 Yr)</div>
+              <div class="ob-val" style="color:{ac}">{aa} {abs(analyst_growth):.1f}%</div>
+              <div class="ob-note">{analyst_n} analyst{'s' if analyst_n != 1 else ''} · ₹{analyst_rev_1y:,.0f} Cr est.</div>
+            </div>""", unsafe_allow_html=True)
 
+        # ── Historical reference ──
+        cagr_n = min(3, len(ann_rev) - 1) if ann_rev is not None and len(ann_rev) >= 2 else None
+        c1c = "#26a69a" if cagr1 and cagr1 >= 0 else "#ef5350"
+        c3c = "#26a69a" if cagr3 and cagr3 >= 0 else "#ef5350"
         st.markdown(f"""
-        <div style="display:flex;flex-direction:column;gap:10px;padding-top:6px">
-          <div class="order-box">
-            <div class="ob-label">1-Year Revenue Growth</div>
-            <div class="ob-val" style="color:{c1h}">{'▲' if cagr1 and cagr1>=0 else '▼'} {abs(cagr1):.1f}%</div>
-            <div class="ob-note">Latest FY vs prior FY</div>
-          </div>
-          <div class="order-box">
-            <div class="ob-label">{min(3,len(ann_rev)-1) if ann_rev is not None and len(ann_rev)>=2 else '—'}-Year CAGR</div>
-            <div class="ob-val" style="color:{c3h}">{'▲' if cagr3 and cagr3>=0 else ('—' if cagr3 is None else '▼')} {f'{abs(cagr3):.1f}%' if cagr3 else '—'}</div>
-            <div class="ob-note">Compound annual growth</div>
-          </div>
-          <div class="order-box">
-            <div class="ob-label">Avg Qtrly Growth Rate</div>
-            <div class="ob-val" style="color:{cqh}">{'▲' if avg_qoq and avg_qoq>=0 else '—'} {f'{abs(avg_qoq*100):.1f}%' if avg_qoq else '—'}</div>
-            <div class="ob-note">Used for forward projection</div>
-          </div>
+        <div style="color:#787b86;font-size:0.7rem;font-weight:700;text-transform:uppercase;
+             letter-spacing:0.6px;margin:4px 0 6px 0">Historical Reference</div>
+        <div class="order-box" style="margin-bottom:6px">
+          <div class="ob-label">1-Yr Revenue Growth</div>
+          <div class="ob-val" style="color:{c1c}">
+            {'▲' if cagr1 and cagr1 >= 0 else ('▼' if cagr1 else '—')}
+            {f' {abs(cagr1):.1f}%' if cagr1 else ''}</div>
+          <div class="ob-note">Latest FY vs prior FY</div>
         </div>
-        """, unsafe_allow_html=True)
+        <div class="order-box">
+          <div class="ob-label">{cagr_n or '—'}-Yr CAGR</div>
+          <div class="ob-val" style="color:{c3c}">
+            {'▲' if cagr3 and cagr3 >= 0 else ('▼' if cagr3 else '—')}
+            {f' {abs(cagr3):.1f}%' if cagr3 else ''}</div>
+          <div class="ob-note">Compound annual growth rate</div>
+        </div>""", unsafe_allow_html=True)
+
+        # ── NSE guidance announcements ──
+        guid_anns = [
+            a for a in announcements
+            if any(k in (a.get("subject", "") + " " + a.get("desc", "")).lower()
+                   for k in GUIDANCE_KEYWORDS)
+        ]
+        if guid_anns:
+            st.markdown(
+                '<div style="color:#787b86;font-size:0.7rem;font-weight:700;text-transform:uppercase;'
+                'letter-spacing:0.6px;margin:12px 0 6px 0">Guidance Announcements</div>',
+                unsafe_allow_html=True,
+            )
+            for ann in guid_anns[:3]:
+                subj = (ann.get("subject") or ann.get("desc") or "")[:80]
+                dt   = (ann.get("exchdisstime") or "")[:10]
+                st.markdown(f"""
+                <div style="background:#1e222d;border-left:3px solid #7e57c2;border-radius:4px;
+                     padding:8px 12px;margin-bottom:5px">
+                  <div style="color:#d1d4dc;font-size:0.78rem">{subj}</div>
+                  <div style="color:#787b86;font-size:0.72rem;margin-top:2px">{dt}</div>
+                </div>""", unsafe_allow_html=True)
 
     with col_p2:
-        # Project next 4 quarters using avg QoQ rate
-        if avg_qoq is not None and rev_s is not None and len(rev_s) > 0:
-            base = float(rev_s.iloc[-1]) / 1e7
-            last_qtr = rev_s.index[-1]   # e.g. "Q4 FY26"
-            # Generate next quarter labels
-            def next_qtr(label):
-                try:
-                    q = int(label[1]); fy = int("20" + label[5:])
-                    q += 1
-                    if q > 4: q, fy = 1, fy + 1
-                    return f"Q{q} FY{str(fy)[2:]}"
-                except Exception:
-                    return label + "+"
+        hist_vals = [float(v) / 1e7 for v in rev_s.values]
+        hist_qtrs = list(rev_s.index)
 
-            proj_qtrs = [last_qtr]
-            proj_vals = [base]
-            lbl = last_qtr
-            for _ in range(4):
-                lbl = next_qtr(lbl)
-                base = round(base * (1 + avg_qoq), 1)
-                proj_qtrs.append(lbl)
-                proj_vals.append(base)
+        bear_proj = project(base_rev, bear_annual)
+        base_proj = project(base_rev, base_annual)
+        bull_proj = project(base_rev, bull_annual)
+        guid_proj = project(base_rev, guidance_yoy) if guidance_yoy is not None else None
+        anal_proj = project(base_rev, analyst_growth) if has_analyst else None
 
-            hist_vals = [(float(v) / 1e7) for v in rev_s.values]
-            hist_qtrs = list(rev_s.index)
+        y_max = max(
+            max(hist_vals),
+            max(bull_proj),
+            max(guid_proj) if guid_proj else 0,
+            max(anal_proj) if anal_proj else 0,
+        ) * 1.12
 
-            fig_proj = go.Figure()
-            fig_proj.add_trace(go.Bar(
-                x=hist_qtrs, y=hist_vals, name="Historical Revenue",
-                marker_color="#26a69a",
-                text=[f"₹{v:,.0f}" for v in hist_vals],
-                textposition="outside", textfont=dict(size=9, color="#787b86"),
+        fig_proj = go.Figure()
+
+        # Historical bars
+        fig_proj.add_trace(go.Bar(
+            x=hist_qtrs, y=hist_vals, name="Historical",
+            marker_color="#26a69a",
+            text=[f"₹{v:,.0f}" for v in hist_vals],
+            textposition="outside", textfont=dict(size=9, color="#787b86"),
+        ))
+
+        # Bull–Bear shaded band
+        fig_proj.add_trace(go.Scatter(
+            x=proj_qtrs_full, y=bull_proj,
+            name=f"Bull  {bull_annual:.0f}% pa",
+            line=dict(color="#26a69a", width=1, dash="dot"),
+            mode="lines",
+        ))
+        fig_proj.add_trace(go.Scatter(
+            x=proj_qtrs_full, y=bear_proj,
+            name=f"Bear  {bear_annual:.0f}% pa",
+            line=dict(color="#ef5350", width=1, dash="dot"),
+            fill="tonexty", fillcolor="rgba(38,166,154,0.07)",
+            mode="lines",
+        ))
+
+        # Base (historical CAGR) — dashed grey reference
+        fig_proj.add_trace(go.Scatter(
+            x=proj_qtrs_full, y=base_proj,
+            name=f"Base  {base_annual:.0f}% pa (hist. CAGR)",
+            line=dict(color="#787b86", width=1.5, dash="dash"),
+            mode="lines+markers",
+        ))
+
+        # Analyst consensus — amber
+        if anal_proj:
+            fig_proj.add_trace(go.Scatter(
+                x=proj_qtrs_full, y=anal_proj,
+                name=f"Analyst  {analyst_growth:.0f}% pa ({analyst_n} est.)",
+                line=dict(color="#f59e0b", width=2),
+                mode="lines+markers+text",
+                text=[""] + [f"₹{v:,.0f}" for v in anal_proj[1:]],
+                textposition="top center",
+                textfont=dict(size=8, color="#f59e0b"),
             ))
-            fig_proj.add_trace(go.Bar(
-                x=proj_qtrs[1:], y=proj_vals[1:], name="Projected Revenue",
-                marker_color="#7e57c2", opacity=0.75,
-                text=[f"₹{v:,.0f}" for v in proj_vals[1:]],
-                textposition="outside", textfont=dict(size=9, color="#d1d4dc"),
+
+        # Management guidance — purple, most prominent
+        if guid_proj:
+            fig_proj.add_trace(go.Scatter(
+                x=proj_qtrs_full, y=guid_proj,
+                name=f"Mgmt Guidance  {guidance_yoy:.0f}% pa",
+                line=dict(color="#7e57c2", width=2.5),
+                mode="lines+markers+text",
+                text=[""] + [f"₹{v:,.0f}" for v in guid_proj[1:]],
+                textposition="top center",
+                textfont=dict(size=9, color="#c5b4e3"),
             ))
-            # Projection boundary line
-            fig_proj.add_vline(
-                x=proj_qtrs[0], line_color="#2a2e39", line_dash="dash", line_width=1.5,
-            )
-            fig_proj.add_annotation(
-                text="◀ Actual   Projected ▶",
-                x=proj_qtrs[0], y=max(max(hist_vals), max(proj_vals)) * 1.05,
-                font=dict(size=10, color="#787b86"), showarrow=False,
-            )
-            fig_proj.update_layout(
-                title=dict(text=f"Revenue Projection — based on {avg_qoq*100:.1f}% avg QoQ growth",
-                           font=dict(size=12, color="#787b86")),
-                height=320, margin=dict(t=50, b=10, l=10, r=10),
-                barmode="group",
-                legend=dict(orientation="h", y=-0.25, font=dict(size=10, color="#787b86"), bgcolor="rgba(0,0,0,0)"),
-                **PLOTLY_DARK,
-            )
-            fig_proj.update_xaxes(tickfont=dict(size=9, color="#787b86"), tickangle=-30)
-            fig_proj.update_yaxes(tickfont=dict(size=9, color="#787b86"), title_text="₹ Cr")
-            st.plotly_chart(fig_proj, use_container_width=True)
+
+        # Divider line between actual and projected
+        fig_proj.add_vline(
+            x=last_qtr, line_color="#2a2e39", line_dash="dash", line_width=1.5,
+        )
+        fig_proj.add_annotation(
+            text="◀ Actual   Projected ▶",
+            x=last_qtr, y=y_max * 0.97,
+            font=dict(size=10, color="#787b86"), showarrow=False,
+            bgcolor="#131722", borderpad=3,
+        )
+
+        primary_source = (
+            "Mgmt Guidance" if guid_proj else
+            f"Analyst Consensus ({analyst_n} est.)" if anal_proj else
+            "Historical CAGR (no guidance entered)"
+        )
+        fig_proj.update_layout(
+            title=dict(
+                text=f"Revenue Outlook — {primary_source}   |   "
+                     f"Bear {bear_annual:.0f}%  /  Base {base_annual:.0f}%  /  Bull {bull_annual:.0f}% pa",
+                font=dict(size=11, color="#787b86"),
+            ),
+            height=370,
+            margin=dict(t=55, b=10, l=10, r=10),
+            barmode="group",
+            legend=dict(
+                orientation="h", y=-0.22,
+                font=dict(size=10, color="#787b86"),
+                bgcolor="rgba(0,0,0,0)",
+            ),
+            **PLOTLY_DARK,
+        )
+        fig_proj.update_xaxes(tickfont=dict(size=9, color="#787b86"), tickangle=-30)
+        fig_proj.update_yaxes(tickfont=dict(size=9, color="#787b86"), title_text="₹ Cr", range=[0, y_max])
+        st.plotly_chart(fig_proj, use_container_width=True)
 
 # ── Quick links ────────────────────────────────────────────────────
+_is_bse    = ticker.endswith(".BO")
+_exch_link = (
+    f'<a href="https://www.bseindia.com/stock-share-price/{symbol.lower()}/A/" target="_blank" style="color:#26a69a;margin-right:16px;">BSE Filings ↗</a>'
+    if _is_bse else
+    f'<a href="https://www.nseindia.com/get-quotes/equity?symbol={symbol}" target="_blank" style="color:#26a69a;margin-right:16px;">NSE Filings ↗</a>'
+)
 st.markdown(f"""
 <div style="margin-top:24px;padding:14px 18px;background:#1e222d;border:1px solid #2a2e39;border-radius:6px;font-size:0.82rem;">
   <span style="color:#787b86;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Quick Links &nbsp;·&nbsp;</span>
-  <a href="https://www.nseindia.com/get-quotes/equity?symbol={symbol}" target="_blank" style="color:#26a69a;margin-right:16px;">NSE Filings ↗</a>
+  {_exch_link}
   <a href="https://www.screener.in/company/{symbol}/" target="_blank" style="color:#26a69a;margin-right:16px;">Screener.in ↗</a>
   <a href="https://www.moneycontrol.com/stocks/cptmarket/compsearchnew.php?search_data={company_name.replace(' ','+')}" target="_blank" style="color:#26a69a;margin-right:16px;">Moneycontrol ↗</a>
-  <a href="https://finance.yahoo.com/quote/{symbol}.NS" target="_blank" style="color:#26a69a;">Yahoo Finance ↗</a>
+  <a href="https://finance.yahoo.com/quote/{ticker}" target="_blank" style="color:#26a69a;">Yahoo Finance ↗</a>
 </div>
 """, unsafe_allow_html=True)
