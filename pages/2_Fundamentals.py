@@ -185,7 +185,7 @@ def _qtr_label(dt):
     return f"Q{q} FY{str(fy)[2:]}"
 
 def fetch_info(symbol, exchange="NSE"):
-    """Fetch key fundamentals — quarterly revenue + info-based margins/EPS."""
+    """Fetch key fundamentals — quarterly revenue, profit YoY, operating leverage, guidance."""
     try:
         ticker = SYMBOL_MAP.get(symbol, symbol)
         suffix = ".BO" if exchange == "BSE" else ".NS"
@@ -195,12 +195,11 @@ def fetch_info(symbol, exchange="NSE"):
             q_inc = tk.quarterly_income_stmt
             a_inc = tk.income_stmt
 
-        if not info or not info.get("trailingEps"):
+        if not info or not info.get("marketCap"):
             return None
 
-        # Quarterly revenue: latest quarter value + QoQ% + YoY%
-        # YoY: try same-quarter comparison (needs 5 quarters); fall back to annual FY vs FY.
-        rev_cr = rev_yoy = rev_qoq = latest_qtr = None
+        rev_yoy = net_yoy = op_leverage = latest_qtr = None
+
         try:
             if q_inc is not None and not q_inc.empty:
                 rev_row = next(
@@ -212,13 +211,8 @@ def fetch_info(symbol, exchange="NSE"):
                     rev_q.index = pd.to_datetime(rev_q.index)
                     if len(rev_q) >= 1:
                         latest_val = float(rev_q.iloc[-1])
-                        rev_cr     = round(latest_val / 1e7, 0)
                         latest_qtr = _qtr_label(rev_q.index[-1])
-                    if len(rev_q) >= 2:
-                        prev_val = float(rev_q.iloc[-2])
-                        if prev_val != 0:
-                            rev_qoq = round((latest_val - prev_val) / abs(prev_val) * 100, 1)
-                    # YoY — same quarter prior year (needs 5 quarters)
+                    # Revenue YoY — same quarter prior year
                     if len(rev_q) >= 5:
                         target_dt = rev_q.index[-1] - pd.DateOffset(years=1)
                         diffs     = (rev_q.index[:-1] - target_dt).abs()
@@ -227,10 +221,39 @@ def fetch_info(symbol, exchange="NSE"):
                             denom = float(rev_q.iloc[ci])
                             if denom != 0:
                                 rev_yoy = round((latest_val - denom) / abs(denom) * 100, 1)
+
+                # Net Profit YoY — same quarter prior year
+                if "Net Income" in q_inc.index:
+                    ni_q = q_inc.loc["Net Income"].dropna().sort_index(ascending=True)
+                    ni_q.index = pd.to_datetime(ni_q.index)
+                    if len(ni_q) >= 5:
+                        latest_ni = float(ni_q.iloc[-1])
+                        target_dt = ni_q.index[-1] - pd.DateOffset(years=1)
+                        diffs     = (ni_q.index[:-1] - target_dt).abs()
+                        ci        = diffs.argmin()
+                        if diffs[ci].days <= 60:
+                            denom = float(ni_q.iloc[ci])
+                            if denom != 0:
+                                net_yoy = round((latest_ni - denom) / abs(denom) * 100, 1)
+
+                # Operating Leverage = Op Income YoY% / Revenue YoY%
+                if "Operating Income" in q_inc.index and rev_yoy is not None and rev_yoy != 0:
+                    oi_q = q_inc.loc["Operating Income"].dropna().sort_index(ascending=True)
+                    oi_q.index = pd.to_datetime(oi_q.index)
+                    if len(oi_q) >= 5:
+                        latest_oi = float(oi_q.iloc[-1])
+                        target_dt = oi_q.index[-1] - pd.DateOffset(years=1)
+                        diffs     = (oi_q.index[:-1] - target_dt).abs()
+                        ci        = diffs.argmin()
+                        if diffs[ci].days <= 60:
+                            denom = float(oi_q.iloc[ci])
+                            if denom != 0:
+                                oi_yoy = (latest_oi - denom) / abs(denom) * 100
+                                op_leverage = round(oi_yoy / rev_yoy, 2)
         except Exception:
             pass
 
-        # YoY fallback: annual FY vs FY when quarterly history is too short
+        # Annual YoY fallback when quarterly history too short
         if rev_yoy is None and a_inc is not None and not a_inc.empty:
             try:
                 rev_row_a = next(
@@ -246,22 +269,21 @@ def fetch_info(symbol, exchange="NSE"):
             except Exception:
                 pass
 
-        earn_g = info.get("earningsGrowth")
+        # Guidance proxies: forward EPS estimate + analyst mean target price
+        fwd_eps      = info.get("forwardEps")
+        target_price = info.get("targetMeanPrice")
+
         return {
-            "Symbol":       symbol,
-            "Market Cap":   info.get("marketCap"),
-            "Quarter":      latest_qtr,
-            "Rev (Cr)":     rev_cr,
-            "Rev YoY%":     rev_yoy,
-            "Rev QoQ%":     rev_qoq,
-            "EPS Growth%":  round(earn_g * 100, 1) if earn_g is not None else None,
-            "Gross Margin": round(info.get("grossMargins", 0) * 100, 1)     if info.get("grossMargins")     else None,
-            "Op Margin":    round(info.get("operatingMargins", 0) * 100, 1) if info.get("operatingMargins") else None,
-            "Net Margin":   round(info.get("profitMargins", 0) * 100, 1)    if info.get("profitMargins")    else None,
-            "EPS (TTM)":    info.get("trailingEps"),
-            "PE":           round(info.get("trailingPE"), 1) if info.get("trailingPE") else None,
-            "ROE%":         round(info.get("returnOnEquity", 0) * 100, 1)   if info.get("returnOnEquity")   else None,
-            "D/E":          round(info.get("debtToEquity"), 1)              if info.get("debtToEquity")     else None,
+            "Symbol":        symbol,
+            "Market Cap":    info.get("marketCap"),
+            "Quarter":       latest_qtr,
+            "Rev YoY%":      rev_yoy,
+            "Net YoY%":      net_yoy,
+            "Op Leverage":   op_leverage,
+            "Fwd EPS":       round(fwd_eps, 2)      if fwd_eps      is not None else None,
+            "Target Price":  round(target_price, 1) if target_price is not None else None,
+            # kept for sort/filter compatibility
+            "PE":            round(info.get("trailingPE"), 1) if info.get("trailingPE") else None,
         }
     except Exception:
         return None
@@ -350,7 +372,7 @@ with tab_screen:
             height=70, label_visibility="visible",
             help="BSE-listed SME stocks fetched with .BO suffix",
         ).strip()
-        sort_f   = st.selectbox("Sort by", ["Rev YoY%", "Rev QoQ%", "Rev (Cr)", "EPS Growth%", "Net Margin", "Op Margin", "PE", "ROE%"])
+        sort_f   = st.selectbox("Sort by", ["Rev YoY%", "Net YoY%", "Op Leverage", "Market Cap", "Fwd EPS", "Target Price", "PE"])
         sort_asc = st.radio("Order", ["Descending ↓", "Ascending ↑"], horizontal=True) == "Ascending ↑"
         min_pe, max_pe = st.slider("PE range", 0, 200, (0, 100))
         scan_btn  = st.button("🚀 Scan Fundamentals", type="primary", use_container_width=True)
@@ -433,11 +455,11 @@ with tab_screen:
         df = df.sort_values(sort_f, ascending=sort_asc, na_position="last").reset_index(drop=True)
 
         # Summary cards
-        pos_yoy = int((df["Rev YoY%"] > 0).sum()) if "Rev YoY%" in df.columns else 0
-        pos_eps = int((df["EPS Growth%"] > 0).sum())
-        avg_nem = df["Net Margin"].mean()
-        avg_yoy = df["Rev YoY%"].mean() if "Rev YoY%" in df.columns else None
-        # Show which quarter the data is from (most common quarter label)
+        pos_rev = int((df["Rev YoY%"] > 0).sum())   if "Rev YoY%" in df.columns else 0
+        pos_net = int((df["Net YoY%"] > 0).sum())   if "Net YoY%" in df.columns else 0
+        avg_rev = df["Rev YoY%"].mean()              if "Rev YoY%" in df.columns else None
+        avg_net = df["Net YoY%"].mean()              if "Net YoY%" in df.columns else None
+        pos_lev = int((df["Op Leverage"] > 1).sum()) if "Op Leverage" in df.columns else 0
         qtr_label = df["Quarter"].mode().iloc[0] if "Quarter" in df.columns and df["Quarter"].notna().any() else ""
 
         def delta_html(val, suffix="%"):
@@ -449,7 +471,7 @@ with tab_screen:
         st.markdown(f"""
         <div style="color:#787b86;font-size:0.75rem;margin-bottom:8px;letter-spacing:0.5px;">
           QUARTERLY DATA &nbsp;·&nbsp; Latest Quarter: <strong style="color:#d1d4dc">{qtr_label}</strong>
-          &nbsp;·&nbsp; Rev YoY% &amp; QoQ% = same quarter vs prior year / prior quarter
+          &nbsp;·&nbsp; YoY = same quarter vs prior year &nbsp;·&nbsp; Op Leverage = Op Income YoY% ÷ Rev YoY%
         </div>
         <div class="metric-row">
           <div class="metric-card">
@@ -458,26 +480,29 @@ with tab_screen:
           </div>
           <div class="metric-card bull">
             <div class="label">Rev YoY +ve</div>
-            <div class="val bull">{pos_yoy}</div>
+            <div class="val bull">{pos_rev}</div>
           </div>
           <div class="metric-card bull">
-            <div class="label">EPS Growth +ve</div>
-            <div class="val bull">{pos_eps}</div>
+            <div class="label">Net Profit YoY +ve</div>
+            <div class="val bull">{pos_net}</div>
           </div>
-          <div class="metric-card {'bull' if avg_yoy and avg_yoy>=0 else 'bear'}">
+          <div class="metric-card {'bull' if avg_rev and avg_rev>=0 else 'bear'}">
             <div class="label">Avg Rev YoY</div>
-            <div class="val" style="font-size:1rem;padding-top:4px;">{delta_html(avg_yoy)}</div>
+            <div class="val" style="font-size:1rem;padding-top:4px;">{delta_html(avg_rev)}</div>
           </div>
-          <div class="metric-card {'bull' if avg_nem and avg_nem>=0 else 'bear'}">
-            <div class="label">Avg Net Margin</div>
-            <div class="val" style="font-size:1rem;padding-top:4px;">{delta_html(avg_nem)}</div>
+          <div class="metric-card {'bull' if avg_net and avg_net>=0 else 'bear'}">
+            <div class="label">Avg Net Profit YoY</div>
+            <div class="val" style="font-size:1rem;padding-top:4px;">{delta_html(avg_net)}</div>
+          </div>
+          <div class="metric-card bull">
+            <div class="label">Op Leverage &gt; 1×</div>
+            <div class="val bull">{pos_lev}</div>
           </div>
         </div>
         """, unsafe_allow_html=True)
 
-        col_order = ["Company Name", "Symbol", "Sector", "Quarter", "Market Cap",
-                     "Rev (Cr)", "Rev YoY%", "Rev QoQ%", "EPS Growth%",
-                     "Gross Margin", "Op Margin", "Net Margin", "EPS (TTM)", "PE", "ROE%", "D/E"]
+        col_order = ["Company Name", "Symbol", "Market Cap", "Quarter",
+                     "Rev YoY%", "Net YoY%", "Op Leverage", "Fwd EPS", "Target Price"]
         df_disp = df[[c for c in col_order if c in df.columns]]
 
         def _is_null(v):
@@ -487,23 +512,24 @@ with tab_screen:
             if _is_null(val): return "color: #787b86"
             return f"color: {'#26a69a' if val >= 0 else '#ef5350'}; font-weight:600"
 
-        def color_pe(val):
+        def color_leverage(val):
             if _is_null(val): return "color: #787b86"
-            if val < 15:  return "color: #26a69a; font-weight:600"
-            if val > 60:  return "color: #ef5350; font-weight:600"
-            return "color: #d1d4dc"
+            if val > 1.5:  return "color: #26a69a; font-weight:700"
+            if val > 1.0:  return "color: #26a69a"
+            if val < 0:    return "color: #ef5350; font-weight:700"
+            return "color: #787b86"
 
         def fmt_pct(v):
             return "—" if _is_null(v) else f"{v:+.1f}%"
 
         def fmt_1f(v):
-            return "—" if _is_null(v) else f"{v:.1f}"
+            return "—" if _is_null(v) else f"{v:.1f}×"
 
         def fmt_2f(v):
-            return "—" if _is_null(v) else f"{v:.2f}"
+            return "—" if _is_null(v) else f"₹{v:.2f}"
 
-        def fmt_rev(v):
-            return "—" if _is_null(v) else f"₹{v:,.0f} Cr"
+        def fmt_price(v):
+            return "—" if _is_null(v) else f"₹{v:.1f}"
 
         def fmt_mcap(val):
             if _is_null(val): return "—"
@@ -512,15 +538,16 @@ with tab_screen:
             if c >= 1_000:   return f"₹{c/1000:.0f}K Cr"
             return f"₹{c:.0f} Cr"
 
-        pct_cols   = ["Rev YoY%","Rev QoQ%","EPS Growth%","Gross Margin","Op Margin","Net Margin","ROE%"]
-        color_cols = ["Rev YoY%","Rev QoQ%","EPS Growth%","Gross Margin","Op Margin","Net Margin","ROE%"]
-        fmt_map = {c: fmt_pct for c in pct_cols if c in df_disp.columns}
-        fmt_map |= {"PE": fmt_1f, "D/E": fmt_1f, "EPS (TTM)": fmt_2f,
-                    "Market Cap": fmt_mcap, "Rev (Cr)": fmt_rev}
+        pct_cols   = ["Rev YoY%", "Net YoY%"]
+        lev_cols   = ["Op Leverage"]
+        fmt_map    = {c: fmt_pct for c in pct_cols if c in df_disp.columns}
+        fmt_map   |= {c: fmt_1f  for c in lev_cols if c in df_disp.columns}
+        fmt_map   |= {"Market Cap": fmt_mcap, "Fwd EPS": fmt_2f, "Target Price": fmt_price}
+
         styled = (
             df_disp.style
-            .map(color_growth, subset=[c for c in color_cols if c in df_disp.columns])
-            .map(color_pe, subset=["PE"] if "PE" in df_disp.columns else [])
+            .map(color_growth,   subset=[c for c in pct_cols if c in df_disp.columns])
+            .map(color_leverage, subset=[c for c in lev_cols if c in df_disp.columns])
             .format({k: v for k, v in fmt_map.items() if k in df_disp.columns})
             .set_properties(**{"background-color":"#1e222d","color":"#d1d4dc","border-color":"#2a2e39"})
         )

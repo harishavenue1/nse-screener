@@ -346,6 +346,11 @@ def fetch_ticker_data(ticker: str) -> dict:
         "sector": None, "exchange": None,
         "sparkline": [],
         "resolved_ticker": ticker,
+        # screener-style price change cols
+        "weekly_pct": None, "monthly_pct": None, "three_month_pct": None,
+        # quarterly fundamental metrics
+        "rev_cr": None, "qoq_rev": None, "yoy_rev": None,
+        "gross_margin": None, "yoy_eps": None,
     }
 
     # ── Stage 1: History (isolated — never let info failure kill this) ────────
@@ -385,6 +390,14 @@ def fetch_ticker_data(ticker: str) -> dict:
             if len(closes) >= 200:
                 result["ma200"]= round(float(closes.tail(200).mean()), 2)
             result["sparkline"] = closes.tail(30).round(2).tolist()
+            def _pchg(n):
+                if len(closes) > n:
+                    p = float(closes.iloc[-n - 1])
+                    return round((last - p) / p * 100, 2) if p else None
+                return None
+            result["weekly_pct"]      = _pchg(5)
+            result["monthly_pct"]     = _pchg(21)
+            result["three_month_pct"] = _pchg(63)
         else:
             result["error"] = "No price history"
     except Exception as e:
@@ -429,20 +442,36 @@ def fetch_ticker_data(ticker: str) -> dict:
             if result["price"]:
                 result["error"] = None
 
-        # Revenue TTM
+        # Quarterly metrics
         try:
-            fin = yf.Ticker(_active_ticker).quarterly_financials
-            if not fin.empty:
-                for lbl in ["Total Revenue", "Revenue"]:
-                    if lbl in fin.index:
-                        rev_row = fin.loc[lbl]
-                        result["rev_ttm"] = float(rev_row.iloc[:4].sum())
-                        if len(rev_row) >= 5:
-                            cq = float(rev_row.iloc[0])
-                            pq = float(rev_row.iloc[4])
-                            if pq:
-                                result["rev_growth"] = round((cq - pq) / abs(pq) * 100, 1)
-                        break
+            q = yf.Ticker(_active_ticker).quarterly_income_stmt
+            if not q.empty:
+                def _qrow(names):
+                    for n in names:
+                        if n in q.index:
+                            r = q.loc[n].dropna()
+                            return r if not r.empty else None
+                    return None
+                rev_row = _qrow(["Total Revenue", "Revenue"])
+                gp_row  = _qrow(["Gross Profit"])
+                eps_row = _qrow(["Basic EPS", "Diluted EPS"])
+                if rev_row is not None:
+                    result["rev_ttm"] = float(rev_row.iloc[:min(4, len(rev_row))].sum())
+                    result["rev_cr"]  = round(float(rev_row.iloc[0]) / 1e7, 1)
+                    if len(rev_row) >= 2:
+                        c, p = float(rev_row.iloc[0]), float(rev_row.iloc[1])
+                        if p: result["qoq_rev"] = round((c - p) / abs(p) * 100, 1)
+                    if len(rev_row) >= 5:
+                        c, y = float(rev_row.iloc[0]), float(rev_row.iloc[4])
+                        if y:
+                            result["yoy_rev"]    = round((c - y) / abs(y) * 100, 1)
+                            result["rev_growth"] = result["yoy_rev"]
+                if gp_row is not None and rev_row is not None:
+                    rv = float(rev_row.iloc[0])
+                    if rv: result["gross_margin"] = round(float(gp_row.iloc[0]) / rv * 100, 1)
+                if eps_row is not None and len(eps_row) >= 5:
+                    ce, ye = float(eps_row.iloc[0]), float(eps_row.iloc[4])
+                    if ye: result["yoy_eps"] = round((ce - ye) / abs(ye) * 100, 1)
         except Exception:
             pass
     except Exception:
@@ -829,281 +858,70 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Tabs: Overview | Technical | Fundamentals
+# Main table — screener-style
 # ─────────────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3 = st.tabs(["📊 Overview", "⚡ Technical", "📋 Fundamentals"])
 
-# ── TAB 1: OVERVIEW ───────────────────────────────────────────────
-with tab1:
-    rows_html = ""
-    for d in all_data:
+_WL_PCT_COLS = ["Change%", "Weekly%", "Monthly%", "3Month%", "QoQ Rev%", "YoY Rev%", "YoY EPS%"]
+
+def _cp(v):
+    if pd.isna(v): return "color:#787b86"
+    return f"color:{'#26a69a' if v >= 0 else '#ef5350'};font-weight:600"
+
+def _fp(v):
+    if pd.isna(v): return "—"
+    return f"▲ {v:.1f}%" if v >= 0 else f"▼ {abs(v):.1f}%"
+
+wl_rows = []
+for d in all_data:
         sym  = _ticker_display_sym(d["ticker"])
-        exch = "BSE" if d["ticker"].endswith(".BO") else "NSE"
-        exch_color = "#ef5350" if exch == "BSE" else "#26a69a"
-        spark = sparkline_html(d["sparkline"])
-        price_html = fmt_price(d["price"])
-        chg_html   = fmt_pct(d["chg_pct"])
-        high52     = fmt_price(d["w52_high"])
-        low52      = fmt_price(d["w52_low"])
-        from_high  = pct_from_high(d["price"], d["w52_high"])
-        mcap_s     = fmt_mcap(d["market_cap"])
-        pe_s       = fmt_num(d["pe"], 1) if d["pe"] else "—"
-        rsi_s      = rsi_pill(d["rsi"])
-        sector_s   = (d["sector"] or "—")[:22]
+        wl_rows.append({
+        "Symbol":        _ticker_display_sym(d["ticker"]),
+        "Company":       d["name"],
+        "Price":         d["price"],
+        "Change%":       d["chg_pct"],
+        "Weekly%":       d["weekly_pct"],
+        "Monthly%":      d["monthly_pct"],
+        "3Month%":       d["three_month_pct"],
+        "Revenue (Cr)":  d["rev_cr"],
+        "QoQ Rev%":      d["qoq_rev"],
+        "YoY Rev%":      d["yoy_rev"],
+        "Gross Margin%": d["gross_margin"],
+        "YoY EPS%":      d["yoy_eps"],
+    })
 
-        rows_html += f"""
-        <tr>
-          <td>
-            <div style="font-size:0.85rem;font-weight:700;color:#d1d4dc;">{sym}</div>
-            <div style="font-size:0.7rem;color:#787b86;max-width:160px;overflow:hidden;text-overflow:ellipsis;">{d['name']}</div>
-            <div style="font-size:0.65rem;margin-top:2px;"><span style="background:#1e222d;border:1px solid {exch_color};color:{exch_color};padding:1px 5px;border-radius:3px;font-size:0.62rem;">{exch}</span> <span style="color:#787b86;">{sector_s}</span></div>
-          </td>
-          <td>{spark}</td>
-          <td style="font-weight:700;color:#d1d4dc;">{price_html}</td>
-          <td>{chg_html}</td>
-          <td class="muted">{high52}</td>
-          <td class="muted">{low52}</td>
-          <td>{from_high}</td>
-          <td class="muted">{mcap_s}</td>
-          <td class="muted">{pe_s}</td>
-          <td>{rsi_s}</td>
-        </tr>"""
+wl_df = pd.DataFrame(wl_rows)
 
-    n_rows = len(all_data)
-    render_table(f"""
-    <div class="wl-table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Stock</th>
-            <th>30D Chart</th>
-            <th>Price</th>
-            <th>Day Chg%</th>
-            <th>52W High</th>
-            <th>52W Low</th>
-            <th>From High</th>
-            <th>Mkt Cap</th>
-            <th>P/E</th>
-            <th>RSI (14)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows_html}
-        </tbody>
-      </table>
-    </div>
-    """, height=min(80 + n_rows * 68, 800))
+def _fmt_rev(v):
+    if pd.isna(v): return "—"
+    return f"₹{v:,.0f} Cr"
 
-# ── TAB 2: TECHNICAL ──────────────────────────────────────────────
-with tab2:
-    rows_html = ""
-    for d in all_data:
-        sym   = _ticker_display_sym(d["ticker"])
-        price = d["price"]
-        ma20  = d["ma20"]
-        ma50  = d["ma50"]
-        ma200 = d["ma200"]
+def _fmt_margin(v):
+    if pd.isna(v): return "—"
+    return f"{v:.1f}%"
 
-        def ma_vs_price(p, ma):
-            if p is None or ma is None or ma == 0: return "—"
-            pct = (p - ma) / ma * 100
-            cls = "bull" if pct > 0 else "bear"
-            return f'<span class="{cls}">{pct:+.1f}%</span>'
+_fmt_map = {c: _fp for c in _WL_PCT_COLS if c in wl_df.columns}
+if "Price"         in wl_df.columns: _fmt_map["Price"]         = "₹{:.2f}".format
+if "Revenue (Cr)"  in wl_df.columns: _fmt_map["Revenue (Cr)"]  = _fmt_rev
+if "Gross Margin%" in wl_df.columns: _fmt_map["Gross Margin%"] = _fmt_margin
 
-        ma_sig = ma_signal_html(price, ma20, ma50, ma200)
-        v_str  = vol_vs_avg(d["volume"], d["avg_volume"])
-        vol_s  = f"{d['volume']/1e5:.1f}L" if d["volume"] else "—"
+styled_wl = (
+    wl_df.style
+    .map(_cp, subset=[c for c in _WL_PCT_COLS if c in wl_df.columns])
+    .format(_fmt_map)
+    .set_properties(**{"background-color": "#1e222d", "color": "#d1d4dc", "border-color": "#2a2e39"})
+)
 
-        def price_tag(p, ma, lbl):
-            if p is None or ma is None: return f"<span class='muted'>—</span>"
-            cls = "bull" if p > ma else "bear"
-            return f'<span class="{cls}">₹{ma:,.0f}</span>'
+st.dataframe(styled_wl, use_container_width=True, height=min(80 + len(wl_df) * 38, 650))
 
-        rows_html += f"""
-        <tr>
-          <td>
-            <div style="font-size:0.85rem;font-weight:700;color:#d1d4dc;">{sym}</div>
-            <div style="font-size:0.7rem;color:#787b86;">{d['name']}</div>
-          </td>
-          <td style="font-weight:700;color:#d1d4dc;">{fmt_price(price)}</td>
-          <td>{fmt_pct(d['chg_pct'])}</td>
-          <td>{rsi_pill(d['rsi'])}</td>
-          <td>{ma_sig}</td>
-          <td>{price_tag(price, ma20,  "20")}<br><span class='muted' style='font-size:0.68rem;'>20 DMA · {ma_vs_price(price,ma20)}</span></td>
-          <td>{price_tag(price, ma50,  "50")}<br><span class='muted' style='font-size:0.68rem;'>50 DMA · {ma_vs_price(price,ma50)}</span></td>
-          <td>{price_tag(price, ma200, "200")}<br><span class='muted' style='font-size:0.68rem;'>200 DMA · {ma_vs_price(price,ma200)}</span></td>
-          <td>{vol_s} <span class='muted' style='font-size:0.7rem;'>({v_str})</span></td>
-          <td>{pct_from_high(price, d['w52_high'])}</td>
-        </tr>"""
-
-    render_table(f"""
-    <div class="wl-table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Stock</th>
-            <th>Price</th>
-            <th>Day Chg%</th>
-            <th>RSI (14)</th>
-            <th>MA Signal</th>
-            <th>20 DMA</th>
-            <th>50 DMA</th>
-            <th>200 DMA</th>
-            <th>Volume</th>
-            <th>vs 52W High</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows_html}
-        </tbody>
-      </table>
-    </div>
-    """, height=min(80 + len(all_data) * 78, 800))
-
-    # RSI chart
-    rsi_data = [(_ticker_display_sym(d["ticker"]), d["rsi"]) for d in all_data if d["rsi"] is not None]
-    if rsi_data:
-        st.markdown('<div class="section-label" style="margin-top:24px;">RSI Distribution</div>', unsafe_allow_html=True)
-        syms_rsi  = [r[0] for r in rsi_data]
-        vals_rsi  = [r[1] for r in rsi_data]
-        bar_colors = ["#ef5350" if v >= 70 else ("#26a69a" if v <= 30 else "#2962ff") for v in vals_rsi]
-
-        fig_rsi = go.Figure(go.Bar(
-            x=syms_rsi, y=vals_rsi,
-            marker_color=bar_colors,
-            text=[f"{v:.0f}" for v in vals_rsi],
-            textposition="outside",
-        ))
-        fig_rsi.add_hline(y=70, line_dash="dash", line_color="#ef5350", annotation_text="Overbought 70",
-                          annotation_font_color="#ef5350", annotation_font_size=10)
-        fig_rsi.add_hline(y=30, line_dash="dash", line_color="#26a69a", annotation_text="Oversold 30",
-                          annotation_font_color="#26a69a", annotation_font_size=10)
-        fig_rsi.add_hrect(y0=70, y1=100, fillcolor="#ef5350", opacity=0.04, line_width=0)
-        fig_rsi.add_hrect(y0=0,  y1=30,  fillcolor="#26a69a", opacity=0.04, line_width=0)
-        fig_rsi.update_layout(
-            height=300, title="RSI (14) — All Watchlist Stocks",
-            **{k: v for k, v in PLOTLY_DARK.items() if k != "yaxis"}
-        )
-        fig_rsi.update_yaxes(range=[0, 110], **PLOTLY_DARK["yaxis"])
-        st.plotly_chart(fig_rsi, use_container_width=True)
-
-# ── TAB 3: FUNDAMENTALS ───────────────────────────────────────────
-with tab3:
-    rows_html = ""
-    for d in all_data:
-        sym   = _ticker_display_sym(d["ticker"])
-        de    = d["debt_equity"]
-        roe   = d["roe"]
-        rev_g = d["rev_growth"]
-
-        def de_html(v):
-            if v is None: return "—"
-            cls = "bull" if v < 1 else ("gold" if v < 2 else "bear")
-            return f'<span class="{cls}">{v:.2f}x</span>'
-
-        def roe_html(v):
-            if v is None: return "—"
-            pct = v * 100 if abs(v) < 10 else v
-            cls = "bull" if pct >= 15 else ("gold" if pct >= 10 else "bear")
-            return f'<span class="{cls}">{pct:.1f}%</span>'
-
-        div_yield = d["dividend_yield"]
-        div_s = f"{div_yield*100:.2f}%" if div_yield else "—"
-
-        pe_html = "—"
-        if d["pe"]:
-            cls = "bull" if d["pe"] < 20 else ("gold" if d["pe"] < 40 else "bear")
-            pe_html = f'<span class="{cls}">{d["pe"]:.1f}x</span>'
-
-        pb_html = "—"
-        if d["pb"]:
-            cls = "bull" if d["pb"] < 3 else ("gold" if d["pb"] < 6 else "bear")
-            pb_html = f'<span class="{cls}">{d["pb"]:.1f}x</span>'
-
-        ev_s = fmt_ratio(d["ev_ebitda"]) if d["ev_ebitda"] else "—"
-        eps_s = f"₹{d['eps']:.2f}" if d["eps"] else "—"
-        rev_ttm_s = fmt_mcap(d["rev_ttm"]) if d["rev_ttm"] else "—"
-
-        rows_html += f"""
-        <tr>
-          <td>
-            <div style="font-size:0.85rem;font-weight:700;color:#d1d4dc;">{sym}</div>
-            <div style="font-size:0.7rem;color:#787b86;">{d['name']}</div>
-          </td>
-          <td class="muted">{fmt_mcap(d['market_cap'])}</td>
-          <td>{pe_html}</td>
-          <td>{pb_html}</td>
-          <td class="muted">{ev_s}</td>
-          <td style="font-weight:600;color:#d1d4dc;">{eps_s}</td>
-          <td class="muted">{rev_ttm_s}</td>
-          <td>{fmt_pct(rev_g, 1) if rev_g is not None else "—"}</td>
-          <td>{de_html(de)}</td>
-          <td>{roe_html(roe)}</td>
-          <td class="{'bull' if div_yield and div_yield > 0.02 else 'muted'}">{div_s}</td>
-        </tr>"""
-
-    render_table(f"""
-    <div class="wl-table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Stock</th>
-            <th>Mkt Cap</th>
-            <th>P/E</th>
-            <th>P/B</th>
-            <th>EV/EBITDA</th>
-            <th>EPS TTM</th>
-            <th>Revenue TTM</th>
-            <th>Rev Growth</th>
-            <th>D/E Ratio</th>
-            <th>ROE</th>
-            <th>Div Yield</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows_html}
-        </tbody>
-      </table>
-    </div>
-    """, height=min(80 + len(all_data) * 68, 800))
-
-    # Scatter: P/E vs ROE
-    plot_data = [
-        d for d in all_data
-        if d["pe"] and d["roe"] and d["market_cap"]
-        and 0 < d["pe"] < 200
-    ]
-    if len(plot_data) >= 2:
-        st.markdown('<div class="section-label" style="margin-top:24px;">P/E vs ROE Scatter</div>', unsafe_allow_html=True)
-        pes   = [d["pe"]  for d in plot_data]
-        roes  = [(d["roe"]*100 if abs(d["roe"]) < 10 else d["roe"]) for d in plot_data]
-        caps  = [max(d["market_cap"] / 1e10, 5) for d in plot_data]
-        names = [_ticker_display_sym(d["ticker"]) for d in plot_data]
-
-        fig_sc = go.Figure(go.Scatter(
-            x=roes, y=pes,
-            mode="markers+text",
-            text=names, textposition="top center",
-            marker=dict(
-                size=[min(max(c, 8), 40) for c in caps],
-                color=roes,
-                colorscale=[[0,"#ef5350"],[0.5,"#f59e0b"],[1,"#26a69a"]],
-                showscale=True,
-                colorbar=dict(title="ROE%", tickfont=dict(color="#787b86")),
-                line=dict(width=1, color="#2a2e39"),
-            ),
-            textfont=dict(color="#d1d4dc", size=10),
-            hovertemplate="<b>%{text}</b><br>ROE: %{x:.1f}%<br>P/E: %{y:.1f}x<extra></extra>",
-        ))
-        fig_sc.update_layout(
-            height=380,
-            title="P/E vs ROE — bubble size = market cap",
-            xaxis_title="ROE (%)",
-            yaxis_title="P/E Ratio",
-            **{k: v for k, v in PLOTLY_DARK.items() if k != "yaxis"}
-        )
-        fig_sc.update_yaxes(**PLOTLY_DARK["yaxis"])
-        st.plotly_chart(fig_sc, use_container_width=True)
+col_l, col_r = st.columns([3, 1])
+with col_r:
+    st.download_button(
+        "⬇️ Export CSV",
+        wl_df.to_csv(index=False).encode(),
+        f"watchlist_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+        "text/csv",
+        use_container_width=True,
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Per-stock detail expanders

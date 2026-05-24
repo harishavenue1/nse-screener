@@ -1,4 +1,6 @@
 import os
+import json
+import concurrent.futures
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -218,7 +220,8 @@ INDEX_URLS = {
 NSE_SEC_LIST_URL = "https://nsearchives.nseindia.com/content/equities/sec_list.csv"
 
 SYMBOL_MAP = {"ZOMATO": "ETERNAL"}
-CACHE_FILE = "/tmp/screener_cache.csv"
+CACHE_FILE      = "/tmp/screener_cache.csv"
+FUND_CACHE_FILE = "/tmp/screener_fund_cache.json"
 BATCH_SIZE = 100
 
 
@@ -386,6 +389,7 @@ def build_row(symbol, ticker, close_d, adj_d, close_w, adj_w, close_m, adj_m):
         "Change%":  pct(-2),
         "Weekly%":  pct(-6),
         "Monthly%": pct_since(pd.DateOffset(months=1)),
+        "3Month%":  pct_since(pd.DateOffset(months=3)),
         "Yearly%":  pct_since(pd.DateOffset(years=1)),
         "RSI(D)":   wilder_rsi(ad) if len(ad) >= 30 else None,
         "RSI(W)":   rsi_w,
@@ -410,6 +414,97 @@ def save_cache(df):
     out = df.copy()
     out["_date"] = date.today().isoformat()
     out.to_csv(CACHE_FILE, index=False)
+
+
+def load_fund_cache():
+    try:
+        if os.path.exists(FUND_CACHE_FILE):
+            with open(FUND_CACHE_FILE) as f:
+                data = json.load(f)
+            if data.get("_date") == date.today().isoformat():
+                return data.get("data", {})
+    except Exception:
+        pass
+    return {}
+
+
+def save_fund_cache(data):
+    try:
+        with open(FUND_CACHE_FILE, "w") as f:
+            json.dump({"_date": date.today().isoformat(), "data": data}, f)
+    except Exception:
+        pass
+
+
+def _fetch_one_fund(args):
+    sym, exchange_map = args
+    suffix = ".BO" if exchange_map.get(sym) == "BSE" else ".NS"
+    ticker_sym = SYMBOL_MAP.get(sym, sym) + suffix
+    try:
+        t = yf.Ticker(ticker_sym)
+        q = t.quarterly_income_stmt  # cols = dates newest-first, rows = metrics
+        if q is None or q.empty:
+            return sym, {}
+
+        def get_row(names):
+            for n in names:
+                if n in q.index:
+                    row = q.loc[n].dropna()
+                    return row if not row.empty else None
+            return None
+
+        rev_row = get_row(["Total Revenue", "Revenue"])
+        gp_row  = get_row(["Gross Profit"])
+        eps_row = get_row(["Basic EPS", "Diluted EPS"])
+
+        result = {}
+
+        if rev_row is not None and len(rev_row) >= 1:
+            result["Revenue (Cr)"] = round(float(rev_row.iloc[0]) / 1e7, 1)
+
+        if rev_row is not None and len(rev_row) >= 2:
+            curr, prev = float(rev_row.iloc[0]), float(rev_row.iloc[1])
+            if prev != 0:
+                result["QoQ Rev%"] = round((curr - prev) / abs(prev) * 100, 1)
+
+        if rev_row is not None and len(rev_row) >= 5:
+            curr, yr = float(rev_row.iloc[0]), float(rev_row.iloc[4])
+            if yr != 0:
+                result["YoY Rev%"] = round((curr - yr) / abs(yr) * 100, 1)
+
+        if gp_row is not None and rev_row is not None and len(rev_row) >= 1:
+            gp, rev = float(gp_row.iloc[0]), float(rev_row.iloc[0])
+            if rev != 0:
+                result["Gross Margin%"] = round(gp / rev * 100, 1)
+
+        if eps_row is not None and len(eps_row) >= 5:
+            curr_e, yr_e = float(eps_row.iloc[0]), float(eps_row.iloc[4])
+            if yr_e != 0:
+                result["YoY EPS%"] = round((curr_e - yr_e) / abs(yr_e) * 100, 1)
+
+        return sym, result
+    except Exception:
+        return sym, {}
+
+
+def fetch_fundamentals(symbols, exchange_map, progress_bar=None):
+    cached = load_fund_cache()
+    to_fetch = [s for s in symbols if s not in cached]
+    if to_fetch:
+        results = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+            futures = {ex.submit(_fetch_one_fund, (s, exchange_map)): s for s in to_fetch}
+            done = 0
+            for fut in concurrent.futures.as_completed(futures):
+                sym, data = fut.result()
+                results[sym] = data
+                done += 1
+                if progress_bar is not None:
+                    progress_bar.progress(done / len(to_fetch))
+        cached.update(results)
+        save_fund_cache(cached)
+    return {s: cached.get(s, {}) for s in symbols}
+
 
 
 def color_pct(val):
@@ -460,7 +555,7 @@ with st.sidebar:
     st.markdown('<div class="section-label">Sort</div>', unsafe_allow_html=True)
     sort_col = st.selectbox(
         "Sort by", label_visibility="collapsed",
-        options=["Monthly%", "Yearly%", "Weekly%", "Change%", "RSI(D)", "RSI(W)", "RSI(M)"],
+        options=["Monthly%", "3Month%", "Yearly%", "Weekly%", "Change%", "RSI(D)", "RSI(W)", "RSI(M)"],
     )
     sort_dir = st.radio("Order", ["Descending ↓", "Ascending ↑"], horizontal=True, label_visibility="collapsed")
     sort_asc = sort_dir == "Ascending ↑"
@@ -525,8 +620,9 @@ if run:
     cached = load_cache()
     if cached is not None:
         st.toast(f"Loaded from today's cache — {len(cached)} stocks.", icon="✅")
-        st.session_state["data"] = cached
-        st.session_state["info"] = info_df
+        st.session_state["data"]         = cached
+        st.session_state["info"]         = info_df
+        st.session_state["exchange_map"] = exchange_map
     else:
         symbols = info_df["Symbol"].tolist()
         progress = st.progress(0, text=f"Scanning {len(symbols)} stocks…")
@@ -543,8 +639,9 @@ if run:
 
         data_df = pd.DataFrame(results)
         save_cache(data_df)
-        st.session_state["data"] = data_df
-        st.session_state["info"] = info_df
+        st.session_state["data"]         = data_df
+        st.session_state["info"]         = info_df
+        st.session_state["exchange_map"] = exchange_map
         st.toast(f"Scan complete — {len(data_df)} stocks loaded.", icon="✅")
 
 # ── Empty state ───────────────────────────────────────────────────
@@ -577,29 +674,80 @@ if search:
 df = df.sort_values(sort_col, ascending=sort_asc, na_position="last").reset_index(drop=True)
 
 col_order = ["Company Name", "Symbol", "Sector", "Price",
-             "Change%", "Weekly%", "Monthly%", "Yearly%",
+             "Change%", "Weekly%", "Monthly%", "3Month%", "Yearly%",
              "RSI(D)", "RSI(W)", "RSI(M)", "3W Green"]
 df = df[[c for c in col_order if c in df.columns]]
 
-# ── Summary metric cards ──────────────────────────────────────────
-gainers    = int((df["Change%"] > 0).sum()) if "Change%" in df.columns else 0
-losers     = int((df["Change%"] < 0).sum()) if "Change%" in df.columns else 0
-green3w    = int(df["3W Green"].sum())       if "3W Green" in df.columns else 0
-overbought = int((df["RSI(D)"] >= 70).sum()) if "RSI(D)" in df.columns else 0
-oversold   = int((df["RSI(D)"] <= 30).sum()) if "RSI(D)" in df.columns else 0
-
-avg_chg    = df["Change%"].mean()  if "Change%" in df.columns else None
-avg_mo     = df["Monthly%"].mean() if "Monthly%" in df.columns else None
-
+# ── Shared helpers ────────────────────────────────────────────────
 def delta_html(val, size="1rem"):
-    """Return a coloured ▲/▼ percentage string."""
     if val is None or pd.isna(val):
         return '<span style="color:#787b86">—</span>'
     arrow = "▲" if val >= 0 else "▼"
     color = "#26a69a" if val >= 0 else "#ef5350"
     return f'<span style="color:{color};font-size:{size};font-weight:700">{arrow} {abs(val):.2f}%</span>'
 
-st.markdown(f"""
+SCREENER_PCT_COLS = ["Change%", "Weekly%", "Monthly%", "3Month%", "Yearly%"]
+RSI_COLS          = ["RSI(D)", "RSI(W)", "RSI(M)"]
+FUND_METRICS   = ["Revenue (Cr)", "QoQ Rev%", "YoY Rev%", "Gross Margin%", "YoY EPS%"]
+FUND_PCT_COLS  = ["QoQ Rev%", "YoY Rev%", "YoY EPS%"]
+FUND_VIEW_COLS = ["Symbol", "Company Name"] + FUND_METRICS
+
+def fmt_pct(v):
+    if pd.isna(v):
+        return "—"
+    return f"▲ {v:.1f}%" if v >= 0 else f"▼ {abs(v):.1f}%"
+
+def fmt_rev(v):
+    if pd.isna(v):
+        return "—"
+    return f"₹{v:,.0f} Cr"
+
+def fmt_margin(v):
+    if pd.isna(v):
+        return "—"
+    return f"{v:.1f}%"
+
+def style_fund_df(frame):
+    pct_sub = [c for c in FUND_PCT_COLS + SCREENER_PCT_COLS if c in frame.columns]
+    rsi_sub = [c for c in RSI_COLS if c in frame.columns]
+    fmt = {c: fmt_pct for c in pct_sub}
+    if "Revenue (Cr)" in frame.columns:
+        fmt["Revenue (Cr)"] = fmt_rev
+    if "Gross Margin%" in frame.columns:
+        fmt["Gross Margin%"] = fmt_margin
+    if "Price" in frame.columns:
+        fmt["Price"] = "₹{:.2f}".format
+    if rsi_sub:
+        fmt.update({c: "{:.1f}".format for c in rsi_sub})
+    styled = (
+        frame.style
+        .map(color_pct, subset=pct_sub)
+        .map(rsi_color, subset=rsi_sub)
+        .format(fmt)
+        .set_properties(**{"background-color": "#1e222d", "color": "#d1d4dc", "border-color": "#2a2e39"})
+    )
+    return styled
+
+def merge_fundamentals(frame, fund_dict):
+    frame = frame.copy()
+    for col in FUND_METRICS:
+        frame[col] = frame["Symbol"].map(lambda s, c=col: fund_dict.get(s, {}).get(c))
+    return frame
+
+# ── Tabs ──────────────────────────────────────────────────────────
+tab1, tab2, tab3 = st.tabs(["📈 Screener", "📊 Fundamental", "⭐ Watchlist"])
+
+# ── Tab 1: Screener ───────────────────────────────────────────────
+with tab1:
+    gainers    = int((df["Change%"] > 0).sum()) if "Change%" in df.columns else 0
+    losers     = int((df["Change%"] < 0).sum()) if "Change%" in df.columns else 0
+    green3w    = int(df["3W Green"].sum())       if "3W Green" in df.columns else 0
+    overbought = int((df["RSI(D)"] >= 70).sum()) if "RSI(D)" in df.columns else 0
+    oversold   = int((df["RSI(D)"] <= 30).sum()) if "RSI(D)" in df.columns else 0
+    avg_chg    = df["Change%"].mean()  if "Change%" in df.columns else None
+    avg_mo     = df["Monthly%"].mean() if "Monthly%" in df.columns else None
+
+    st.markdown(f"""
 <div class="metric-row">
   <div class="metric-card blue">
     <div class="label">Stocks shown</div>
@@ -636,40 +784,77 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ── Table ─────────────────────────────────────────────────────────
-pct_cols = ["Change%", "Weekly%", "Monthly%", "Yearly%"]
-rsi_cols = ["RSI(D)", "RSI(W)", "RSI(M)"]
-
-styled = (
-    df.style
-    .map(color_pct, subset=[c for c in pct_cols if c in df.columns])
-    .map(rsi_color, subset=[c for c in rsi_cols if c in df.columns])
-    .format(
-        {c: lambda v: f"▲ {v:.2f}%" if not pd.isna(v) and v >= 0 else (f"▼ {abs(v):.2f}%" if not pd.isna(v) else "—")
-         for c in pct_cols if c in df.columns}
-        | {c: "{:.1f}" for c in rsi_cols if c in df.columns}
-        | {"Price": "₹{:.2f}"}
+    styled1 = (
+        df.style
+        .map(color_pct, subset=[c for c in SCREENER_PCT_COLS if c in df.columns])
+        .map(rsi_color, subset=[c for c in RSI_COLS if c in df.columns])
+        .format(
+            {c: fmt_pct for c in SCREENER_PCT_COLS if c in df.columns}
+            | {c: "{:.1f}".format for c in RSI_COLS if c in df.columns}
+            | ({"Price": "₹{:.2f}".format} if "Price" in df.columns else {})
+        )
+        .set_properties(**{"background-color": "#1e222d", "color": "#d1d4dc", "border-color": "#2a2e39"})
     )
-    .set_properties(**{"background-color": "#1e222d", "color": "#d1d4dc", "border-color": "#2a2e39"})
-)
+    st.dataframe(styled1, use_container_width=True, height=620)
 
-st.dataframe(styled, use_container_width=True, height=640)
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown(
+            '<div style="color:#2a2e39;font-size:0.75rem;padding-top:8px;">'
+            'Data: Yahoo Finance (1d / 1wk / 1mo) + NSE index CSVs &nbsp;·&nbsp; Cached daily'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    with col2:
+        st.download_button(
+            "⬇️ Export CSV",
+            df.to_csv(index=False).encode(),
+            f"nse_screener_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            "text/csv",
+            use_container_width=True,
+        )
 
-# ── Footer ────────────────────────────────────────────────────────
-col1, col2 = st.columns([3, 1])
-with col1:
+# ── Tab 2: Fundamental ────────────────────────────────────────────
+with tab2:
+    exmap = st.session_state.get("exchange_map", {})
+    syms  = df["Symbol"].tolist()
+
+    if "fund_data" not in st.session_state:
+        # Check if cache already has all symbols
+        cached_fund = load_fund_cache()
+        if all(s in cached_fund for s in syms):
+            st.session_state["fund_data"] = cached_fund
+        else:
+            missing = len([s for s in syms if s not in cached_fund])
+            st.info(f"Fundamental data not loaded. {missing} stocks need fetching (Sales & Profit growth from Yahoo Finance).")
+            if st.button("Load Fundamental Data", type="primary", key="load_fund"):
+                pb  = st.progress(0, text="Fetching fundamentals…")
+                st.session_state["fund_data"] = fetch_fundamentals(syms, exmap, pb)
+                pb.empty()
+                st.rerun()
+
+    if "fund_data" in st.session_state:
+        fund_dict = st.session_state["fund_data"]
+        base_df   = df[["Symbol", "Company Name"]].copy()
+        fund_df   = merge_fundamentals(base_df, fund_dict)
+        fund_df   = fund_df[[c for c in FUND_VIEW_COLS if c in fund_df.columns]]
+
+        st.dataframe(style_fund_df(fund_df), use_container_width=True, height=640)
+        st.download_button(
+            "⬇️ Export CSV",
+            fund_df.to_csv(index=False).encode(),
+            f"nse_fundamental_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            "text/csv",
+        )
+
+# ── Tab 3: Watchlist ──────────────────────────────────────────────
+with tab3:
     st.markdown(
-        '<div style="color:#2a2e39;font-size:0.75rem;padding-top:8px;">'
-        'Data: Yahoo Finance (1d / 1wk / 1mo) + NSE index CSVs &nbsp;·&nbsp; Cached daily'
+        '<div style="text-align:center;padding:60px 0;">'
+        '<div style="font-size:3rem;margin-bottom:16px;">⭐</div>'
+        '<div style="font-size:1.1rem;font-weight:600;color:#d1d4dc;margin-bottom:8px;">Your Watchlist is managed on the Watchlist page</div>'
+        '<div style="color:#787b86;font-size:0.85rem;margin-bottom:24px;">Add stocks, view charts, technicals and fundamentals — all in one place.</div>'
         '</div>',
         unsafe_allow_html=True,
     )
-with col2:
-    csv = df.to_csv(index=False).encode()
-    st.download_button(
-        "⬇️ Export CSV",
-        csv,
-        f"nse_screener_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        "text/csv",
-        use_container_width=True,
-    )
+    st.page_link("pages/4_Watchlist.py", label="Go to Watchlist →", icon="⭐")
