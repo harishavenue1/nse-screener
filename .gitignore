@@ -2,3 +2,5 @@ screener_cache.csv
 venv/
 __pycache__/
 holdings.json
+growth_cache.csv
+sector_cache.csv
